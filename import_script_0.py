@@ -24,7 +24,7 @@ CONFIG = {
         "FOOTBALLERS": "1F1VtMQHMMd_uON81exgVmpOz2xVZNm9aHSVucVBZZW0",
         "IZIDROP": "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY",
         "MOYDROP": "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs",
-        "SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
+        #"SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
         "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg"
     },
     "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
@@ -1052,3 +1052,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
