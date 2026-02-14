@@ -3,7 +3,7 @@ name: Scheduled Script Runner
 on:
   schedule:
     # Запуск каждый день в 00:00 по UTC (настрой под себя)
-    - cron: '1 4 * * *'
+    - cron: '0 14 * * *'
   workflow_dispatch: # Позволяет запускать скрипт вручную кнопкой
 
 jobs:
