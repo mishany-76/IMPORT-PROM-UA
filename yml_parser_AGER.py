@@ -918,11 +918,18 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "1ls3HlH3cs3f-7GwBbnp7I7tYLxt9p-F80MmrUjsyk6M"  # Replace with your actual spreadsheet ID
+    SPREADSHEET_ID = "1ls3HlH3cs3f-7GwBbnp7I7tYLxt9p-F80MmrUjsyk6M"
 
-    FEEDS = [
-        "https://ager.ua/yml_prom?code=multi&param=7235",
-        # Add more feed URLs as needed
-    ]
+    # Пробуем взять ссылку из секретов GitHub, если её нет — используем пустой список или тестовую ссылку
+    ager_url = os.environ.get("AGER_FEED_URL")
+
+    if ager_url:
+        FEEDS = [ager_url]
+        logger.info("URL поставщика AGER успешно получен из секретов.")
+    else:
+        # Это сработает при локальном запуске, если ты не настроил переменные окружения
+        FEEDS = ["https://ager.ua/yml_prom?code=multi&param=7235"] 
+        logger.warning("Предупреждение: Ссылка AGER не найдена в секретах, используем локальное значение.")
+
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
