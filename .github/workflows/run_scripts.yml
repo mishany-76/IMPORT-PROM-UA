@@ -3,7 +3,7 @@ name: Scheduled Script Runner
 on:
   schedule:
     # Запуск каждый день в 00:00 по UTC (настрой под себя)
-    - cron: '49 8,12,17 * * *'
+    - cron: '49 7,11,16 * * *'
   workflow_dispatch: # Позволяет запускать скрипт вручную кнопкой
 
 jobs:
@@ -37,4 +37,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
+          # Добавляем секретную ссылку для AGER
+          AGER_FEED_URL: ${{ secrets.AGER_FEED_URL }}
         run: python main.py
