@@ -75,7 +75,19 @@ class FeedProcessor:
         logger.info(f"Fetching feed from: {feed_url}")
 
         try:
-            response = requests.get(feed_url, timeout=30)
+            # Получаем пароль (User-Agent) из секретов GitHub
+            # Если секрета нет, используем нейтральный заголовок, чтобы не светить 'python-requests'
+            user_agent = os.environ.get("AGER_USER_AGENT", "Data-Sync-Service-v2")
+
+            headers = {'User-Agent': user_agent}
+            
+            # Логируем только факт использования заголовка (сам пароль не выводим для безопасности)
+            if user_agent != "Data-Sync-Service-v2":
+                logger.info("Для запроса используется секретный User-Agent из настроек.")
+            else:
+                logger.warning("Секретный User-Agent не найден, используется резервный заголовок.")
+
+            response = requests.get(feed_url, timeout=30, headers=headers)
             response.raise_for_status()
 
             # Parse XML content
