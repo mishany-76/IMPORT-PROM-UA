@@ -39,4 +39,6 @@ jobs:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           # Добавляем секретную ссылку для AGER
           AGER_FEED_URL: ${{ secrets.AGER_FEED_URL }}
+          # ДОБАВЬ ЭТУ СТРОКУ:
+          AGER_USER_AGENT: ${{ secrets.AGER_USER_AGENT }}
         run: python main.py
