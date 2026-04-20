@@ -39,6 +39,7 @@ class GoogleSheetsManager:
         self.service = self._authenticate()
         self.last_request_time = datetime.now()
         self.spreadsheet_id = CONFIG["OUTPUT_SPREADSHEET_ID"]
+        self._sheet_id_cache = {}  # Кэш sheetId по имени листа
 
     def _authenticate(self):
         try:
@@ -319,25 +320,30 @@ class GoogleSheetsManager:
                 for row_id in deleted_rows:
                     logger.info(f"Позиция с ключом {row_id} отсутствует у поставщика и будет удалена")
 
-                for row_idx in rows_to_delete:
-                    request = {
+                # Собираем все запросы на удаление в один список и отправляем одним batchUpdate.
+                # Строки отсортированы по убыванию — Google Sheets корректно пересчитывает индексы.
+                sheet_id = self._get_sheet_id(sheet_name)
+                delete_requests = [
+                    {
                         'deleteDimension': {
                             'range': {
-                                'sheetId': self._get_sheet_id(sheet_name),
+                                'sheetId': sheet_id,
                                 'dimension': 'ROWS',
                                 'startIndex': row_idx - 1,
                                 'endIndex': row_idx
                             }
                         }
                     }
+                    for row_idx in rows_to_delete
+                ]
 
-                    self._wait_if_needed()
-                    self.service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={'requests': [request]}
-                    ).execute()
+                self._wait_if_needed()
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={'requests': delete_requests}
+                ).execute()
 
-                    logger.info(f"Удалена строка {row_idx} (позиция отсутствует у поставщика)")
+                logger.info(f"Удалено {len(rows_to_delete)} строк одним запросом (позиции отсутствуют у поставщика)")
 
             sheet_type = "products" if "Export Products Sheet" in sheet_name else "groups"
             self._remove_duplicates(spreadsheet_id, sheet_name, sheet_type)
@@ -353,14 +359,20 @@ class GoogleSheetsManager:
 
     def _get_sheet_id(self, sheet_name):
         try:
+            if sheet_name in self._sheet_id_cache:
+                return self._sheet_id_cache[sheet_name]
+
             self._wait_if_needed()
             sheets_metadata = self.service.spreadsheets().get(
                 spreadsheetId=CONFIG["OUTPUT_SPREADSHEET_ID"]
             ).execute()
 
             for sheet in sheets_metadata.get('sheets', []):
-                if sheet['properties']['title'] == sheet_name:
-                    return sheet['properties']['sheetId']
+                title = sheet['properties']['title']
+                self._sheet_id_cache[title] = sheet['properties']['sheetId']
+
+            if sheet_name in self._sheet_id_cache:
+                return self._sheet_id_cache[sheet_name]
 
             logger.error(f"Лист {sheet_name} не найден")
             raise ValueError(f"Лист {sheet_name} не найден")
