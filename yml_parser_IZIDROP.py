@@ -48,6 +48,7 @@ class FeedProcessor:
         # Store categories and products from all feeds
         self.categories = {}  # id -> category data
         self.products = {}  # id -> product data
+        self._sheet_id_cache = {}  # Кэш sheetId по имени листа
 
     def _get_sheets_service(self):
         """Create and return Google Sheets API service."""
@@ -78,7 +79,7 @@ class FeedProcessor:
                 'Upgrade-Insecure-Requests': '1',
             }
 
-            response = requests.get(feed_url, headers=headers, timeout=30)
+            response = requests.get(feed_url, headers=headers, timeout=(10, 120))
             response.raise_for_status()
 
             # Parse XML content
@@ -165,17 +166,27 @@ class FeedProcessor:
 
                 products_dict[product_id] = product_data
 
-            logger.info(f"Parsed {len(categories_dict)} categories and {len(products_dict)} products from feed")
+            if not categories_dict and not products_dict:
+                logger.warning(f"ВНИМАНИЕ: Фид {feed_url} вернул 0 категорий и 0 товаров. "
+                               f"Проверьте структуру XML или доступность ссылки.")
+            else:
+                logger.info(f"Parsed {len(categories_dict)} categories and {len(products_dict)} products from feed")
             return categories_dict, products_dict
 
+        except requests.exceptions.Timeout as e:
+            logger.error(f"TIMEOUT при скачивании фида {feed_url}: {e}. Проверьте доступность ссылки поставщика.")
+            return {}, {}
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"ОШИБКА ПОДКЛЮЧЕНИЯ к фиду {feed_url}: {e}. Ссылка недоступна.")
+            return {}, {}
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching feed: {e}")
+            logger.error(f"Ошибка запроса фида {feed_url}: {e}")
             return {}, {}
         except ET.ParseError as e:
-            logger.error(f"Error parsing XML feed: {e}")
+            logger.error(f"Ошибка парсинга XML фида {feed_url}: {e}")
             return {}, {}
         except Exception as e:
-            logger.error(f"Unexpected error processing feed: {e}")
+            logger.error(f"Неожиданная ошибка при обработке фида {feed_url}: {e}", exc_info=True)
             return {}, {}
 
     def process_all_feeds(self):
@@ -454,32 +465,29 @@ class FeedProcessor:
                     if row_id and row_id not in current_ids:
                         rows_to_delete.append(i + 1)  # +1 for 1-indexed rows in API
 
-            # Delete rows in reverse order to avoid shifting indices
+            # Собираем все удаления в один batchUpdate — один запрос вместо N/20 запросов.
+            # Строки отсортированы по убыванию, поэтому Google Sheets корректно пересчитывает индексы.
             if rows_to_delete:
                 rows_to_delete.sort(reverse=True)
-                # Delete in batches to respect API limits
-                batch_size = 20  # Smaller batch for delete operations
-                for i in range(0, len(rows_to_delete), batch_size):
-                    batch = rows_to_delete[i:i + batch_size]
-                    requests = []
-                    for row_index in batch:
-                        requests.append({
-                            'deleteDimension': {
-                                'range': {
-                                    'sheetId': self._get_sheet_id(sheet_name),
-                                    'dimension': 'ROWS',
-                                    'startIndex': row_index - 1,  # Convert to 0-indexed
-                                    'endIndex': row_index  # End is exclusive
-                                }
+                sheet_id = self._get_sheet_id(sheet_name)
+                delete_requests = [
+                    {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': sheet_id,
+                                'dimension': 'ROWS',
+                                'startIndex': row_index - 1,  # Convert to 0-indexed
+                                'endIndex': row_index  # End is exclusive
                             }
-                        })
-                    if requests:
-                        self.service.batchUpdate(
-                            spreadsheetId=self.spreadsheet_id,
-                            body={'requests': requests}
-                        ).execute()
-                        # Respect API rate limit
-                        time.sleep(API_DELAY)
+                        }
+                    }
+                    for row_index in rows_to_delete
+                ]
+                self.service.batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={'requests': delete_requests}
+                ).execute()
+                time.sleep(API_DELAY)
 
                 logger.info(f"Deleted {len(rows_to_delete)} rows from {sheet_name} for items no longer in feed")
         except HttpError as e:
@@ -487,11 +495,15 @@ class FeedProcessor:
             raise
 
     def _get_sheet_id(self, sheet_name: str) -> int:
-        """Get the sheet ID for a given sheet name."""
+        """Get the sheet ID for a given sheet name (with caching)."""
+        if sheet_name in self._sheet_id_cache:
+            return self._sheet_id_cache[sheet_name]
         sheet_metadata = self.service.get(spreadsheetId=self.spreadsheet_id).execute()
         for sheet in sheet_metadata.get('sheets', []):
-            if sheet['properties']['title'] == sheet_name:
-                return sheet['properties']['sheetId']
+            title = sheet['properties']['title']
+            self._sheet_id_cache[title] = sheet['properties']['sheetId']
+        if sheet_name in self._sheet_id_cache:
+            return self._sheet_id_cache[sheet_name]
         raise ValueError(f"Sheet {sheet_name} not found")
 
     def update_sheet_in_batches(self, sheet_name: str, data: List[List], id_column: str):
