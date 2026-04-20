@@ -200,24 +200,32 @@ def run_script_with_retries(script_path, retries=3):
     return None
 
 
-def trigger_google_apps_script(url):
-    """Отправляет запрос для запуска Google Apps Script."""
+def trigger_google_apps_script(url, retries=3):
+    """Отправляет запрос для запуска Google Apps Script с повторными попытками."""
     if not url or url == "ВАШ_URL_GOOGLE_APPS_SCRIPT_ЗДЕСЬ":
         logging.warning("URL Google Apps Script не настроен. Пропуск запуска.")
         print("URL Google Apps Script не настроен. Пропуск запуска.")
         return False
 
-    logging.info(f"Запуск Google Apps Script по URL: {url}")
-    print(f"Запуск Google Apps Script по URL: {url}")
-    try:
-        response = requests.get(url, timeout=1800)
-        response.raise_for_status()
-        logging.info(f"Google Apps Script успешно запущен. Ответ сервера: {response.status_code}")
-        print(f"Google Apps Script успешно запущен. Ответ сервера: {response.status_code}")
-        return True
-    except Exception as e:
-        logging.error(f"Ошибка при вызове Google Apps Script: {e}")
-        print(f"Ошибка при вызове Google Apps Script: {e}")
+    for attempt in range(1, retries + 1):
+        logging.info(f"Запуск Google Apps Script (попытка {attempt}/{retries}): {url}")
+        print(f"Запуск Google Apps Script (попытка {attempt}/{retries})...")
+        try:
+            response = requests.get(url, timeout=1800)
+            response.raise_for_status()
+            logging.info(f"Google Apps Script успешно запущен. Ответ сервера: {response.status_code}")
+            print(f"Google Apps Script успешно запущен. Ответ сервера: {response.status_code}")
+            return True
+        except Exception as e:
+            logging.error(f"Ошибка при вызове Google Apps Script (попытка {attempt}/{retries}): {e}")
+            print(f"Ошибка при вызове Google Apps Script (попытка {attempt}/{retries}): {e}")
+            if attempt < retries:
+                wait = 30 * attempt
+                logging.info(f"Ожидание {wait} сек перед следующей попыткой...")
+                time.sleep(wait)
+
+    logging.error(f"Google Apps Script не удалось запустить после {retries} попыток.")
+    print(f"Google Apps Script не удалось запустить после {retries} попыток.")
     return False
 
 
@@ -269,9 +277,10 @@ def run_scripts_sequentially():
         if script_name == "import_script_0.py":
             if script_successfully_completed:
                 logging.info(f"Скрипт {script_name} успешно завершен. Запускаем Google Apps Script для перевода...")
-                trigger_google_apps_script(GOOGLE_APPS_SCRIPT_URL)
             else:
-                logging.warning(f"Скрипт {script_name} не был успешно завершен. Пропуск запуска Google Apps Script.")
+                logging.warning(f"Скрипт {script_name} завершился с ошибкой, но Google Apps Script будет запущен в любом случае.")
+                print(f"ВНИМАНИЕ: {script_name} завершился с ошибкой. Google Apps Script запускается принудительно...")
+            trigger_google_apps_script(GOOGLE_APPS_SCRIPT_URL)
 
         if script_name != SCRIPTS_TO_RUN[-1]:
             current_delay = max(DELAY_BETWEEN_SCRIPTS, exec_time * 0.1)
