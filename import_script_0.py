@@ -28,8 +28,8 @@ CONFIG = {
         "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg"
     },
     "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
-    "DELAY_BETWEEN_REQUESTS": 1.1,
-    "MAX_RETRIES": 3,
+    "DELAY_BETWEEN_REQUESTS": 1.9,
+    "MAX_RETRIES": 7,
     "BATCH_SIZE": 200
 }
 
@@ -57,16 +57,66 @@ class GoogleSheetsManager:
             time.sleep(CONFIG["DELAY_BETWEEN_REQUESTS"] - elapsed)
         self.last_request_time = datetime.now()
 
-    def get_sheet_data(self, spreadsheet_id, sheet_name):
+    def _execute_with_retry(self, request_callable):
+        """
+        Выполняет API-запрос с умными повторными попытками.
+        - Ошибка 429 (квота) → длинная пауза: 60, 120, 180... секунд
+        - Сетевая ошибка (SSL, Connection) → короткая пауза: 5, 10, 20... секунд
+        - Прочие ошибки → средняя пауза: 2^attempt секунд
+        """
+        from googleapiclient.errors import HttpError
+        import socket
+
         for attempt in range(CONFIG["MAX_RETRIES"]):
             try:
                 self._wait_if_needed()
-                # Запрашиваем данные, чтобы получить форматированные значения, как они отображаются в таблице
-                result = self.service.spreadsheets().values().get(
-                    spreadsheetId=spreadsheet_id,
-                    range=sheet_name,
-                    valueRenderOption='FORMATTED_VALUE'  # Изменено на FORMATTED_VALUE
-                ).execute()
+                return request_callable()
+            except HttpError as e:
+                status = e.resp.status if hasattr(e, 'resp') and e.resp else 0
+                if status == 429:
+                    wait = 60 * (attempt + 1)
+                    logger.warning(f"Ошибка квоты Google API (429). Попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}. "
+                                   f"Ожидание {wait} сек...")
+                    time.sleep(wait)
+                elif status in (500, 502, 503):
+                    wait = 10 * (attempt + 1)
+                    logger.warning(f"Ошибка сервера Google ({status}). Попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}. "
+                                   f"Ожидание {wait} сек...")
+                    time.sleep(wait)
+                else:
+                    logger.warning(f"HTTP ошибка {status}. Попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}: {e}")
+                    time.sleep(2 ** attempt)
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    logger.error(f"Все {CONFIG['MAX_RETRIES']} попыток исчерпаны. Последняя ошибка: {e}")
+                    raise
+            except (ConnectionError, TimeoutError, socket.timeout, OSError) as e:
+                wait = 5 * (attempt + 1)
+                logger.warning(f"Сетевая ошибка. Попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}. "
+                               f"Ожидание {wait} сек... Ошибка: {e}")
+                time.sleep(wait)
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    logger.error(f"Все {CONFIG['MAX_RETRIES']} попыток исчерпаны из-за сетевых ошибок.")
+                    raise
+            except Exception as e:
+                wait = 2 ** attempt
+                logger.warning(f"Неожиданная ошибка. Попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}. "
+                               f"Ожидание {wait} сек... Ошибка: {e}")
+                time.sleep(wait)
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    logger.error(f"Все {CONFIG['MAX_RETRIES']} попыток исчерпаны.")
+                    raise
+
+    def get_sheet_data(self, spreadsheet_id, sheet_name):
+        for attempt in range(CONFIG["MAX_RETRIES"]):
+            try:
+                # Используем умный retry: 429 → длинная пауза, сеть → короткая
+                result = self._execute_with_retry(
+                    lambda: self.service.spreadsheets().values().get(
+                        spreadsheetId=spreadsheet_id,
+                        range=sheet_name,
+                        valueRenderOption='FORMATTED_VALUE'
+                    ).execute()
+                )
 
                 values = result.get('values', [])
 
@@ -569,24 +619,15 @@ class GoogleSheetsManager:
 
         body = {'values': values}
 
-        for attempt in range(CONFIG["MAX_RETRIES"]):
-            try:
-                self._wait_if_needed()
-                logger.info(f"Записываем пакет данных в {sheet_name} по диапазону {range_name}: {len(values)} строк")
-
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=range_name,
-                    valueInputOption='RAW',
-                    body=body
-                ).execute()
-                return
-            except Exception as e:
-                logger.warning(f"Попытка {attempt + 1} записи не удалась: {str(e)}")
-                if attempt == CONFIG["MAX_RETRIES"] - 1:
-                    logger.error(f"Все попытки записи не удались. Последняя ошибка: {str(e)}")
-                    raise Exception(f"Ошибка API при записи данных: {str(e)}")
-                time.sleep(2 ** attempt)
+        logger.info(f"Записываем пакет данных в {sheet_name} по диапазону {range_name}: {len(values)} строк")
+        self._execute_with_retry(
+            lambda: self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+        )
 
     def _get_next_empty_row(self, spreadsheet_id, sheet_name):
         self._wait_if_needed()
