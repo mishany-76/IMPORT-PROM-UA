@@ -6,14 +6,20 @@ from googleapiclient.discovery import build
 import time
 from datetime import datetime
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='google_sheets_import.log',
-    encoding='utf-8'
-)
+# Настройка логирования — вывод и в файл, и в консоль (для GitHub Actions)
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Вывод в файл
+file_handler = logging.FileHandler('google_sheets_import.log', encoding='utf-8')
+file_handler.setFormatter(log_formatter)
+logger.addHandler(file_handler)
+
+# Вывод в консоль (stdout) — видно в GitHub Actions
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
 
 # Конфигурация
 CONFIG = {
@@ -28,8 +34,7 @@ CONFIG = {
         "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg"
     },
     "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
-    "DELAY_BETWEEN_REQUESTS": 2.0,
-    "DELAY_BETWEEN_SUPPLIERS": 5.0,
+    "DELAY_BETWEEN_REQUESTS": 1.1,
     "MAX_RETRIES": 5,
     "BATCH_SIZE": 200
 }
@@ -332,24 +337,17 @@ class GoogleSheetsManager:
                 else:
                     new_rows = pd.concat([new_rows, pd.DataFrame([row])], ignore_index=True)
 
-            # Отправляем все обновления строк одним запросом вместо цикла
-            if updates:
-                batch_data = [
-                    {
-                        'range': f"{sheet_name}!A{row_idx}",
-                        'values': [row_data]
-                    }
-                    for row_idx, row_data in updates
-                ]
+            # Остальная часть функции остается без изменений
+            for row_idx, row_data in updates:
+                range_name = f"{sheet_name}!A{row_idx}"
+
                 self._wait_if_needed()
-                self.service.spreadsheets().values().batchUpdate(
+                self.service.spreadsheets().values().update(
                     spreadsheetId=spreadsheet_id,
-                    body={
-                        'valueInputOption': 'RAW',
-                        'data': batch_data
-                    }
+                    range=range_name,
+                    valueInputOption='RAW',
+                    body={'values': [row_data]}
                 ).execute()
-                logger.info(f"Обновлено {len(updates)} строк одним запросом в {sheet_name}")
 
             if not new_rows.empty:
                 start_row = len(existing_values) + 1
@@ -518,27 +516,26 @@ class GoogleSheetsManager:
                     logger.info(
                         f"Обновлена оригинальная строка {idx + 1} с данными из дубликатов: {updated_row[id_idx]}")
 
-                if rows_to_delete:
-                    sheet_id = self._get_sheet_id(sheet_name)
-                    delete_requests = [
-                        {
-                            'deleteDimension': {
-                                'range': {
-                                    'sheetId': sheet_id,
-                                    'dimension': 'ROWS',
-                                    'startIndex': row_idx - 1,
-                                    'endIndex': row_idx
-                                }
+                for row_idx in sorted(rows_to_delete, reverse=True):
+                    request = {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': self._get_sheet_id(sheet_name),
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,
+                                'endIndex': row_idx
                             }
                         }
-                        for row_idx in sorted(rows_to_delete, reverse=True)
-                    ]
+                    }
+
                     self._wait_if_needed()
                     self.service.spreadsheets().batchUpdate(
                         spreadsheetId=spreadsheet_id,
-                        body={'requests': delete_requests}
+                        body={'requests': [request]}
                     ).execute()
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов одним запросом в {sheet_name}")
+
+                if rows_to_delete:
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
 
             else:
                 group_num_col = "Ідентифікатор_групи"
@@ -563,27 +560,26 @@ class GoogleSheetsManager:
                         else:
                             seen_groups[group_key] = i
 
-                if rows_to_delete:
-                    sheet_id = self._get_sheet_id(sheet_name)
-                    delete_requests = [
-                        {
-                            'deleteDimension': {
-                                'range': {
-                                    'sheetId': sheet_id,
-                                    'dimension': 'ROWS',
-                                    'startIndex': row_idx - 1,
-                                    'endIndex': row_idx
-                                }
+                for row_idx in sorted(rows_to_delete, reverse=True):
+                    request = {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': self._get_sheet_id(sheet_name),
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,
+                                'endIndex': row_idx
                             }
                         }
-                        for row_idx in sorted(rows_to_delete, reverse=True)
-                    ]
+                    }
+
                     self._wait_if_needed()
                     self.service.spreadsheets().batchUpdate(
                         spreadsheetId=spreadsheet_id,
-                        body={'requests': delete_requests}
+                        body={'requests': [request]}
                     ).execute()
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов одним запросом в {sheet_name}")
+
+                if rows_to_delete:
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
 
         except Exception as e:
             logger.error(f"Ошибка при удалении дубликатов в {sheet_name}: {e}")
@@ -1130,8 +1126,7 @@ def main():
         all_products = []
         all_groups = []
 
-        suppliers_list = list(CONFIG["SUPPLIERS"].items())
-        for supplier_index, (supplier_name, spreadsheet_id) in enumerate(suppliers_list):
+        for supplier_name, spreadsheet_id in CONFIG["SUPPLIERS"].items():
             logger.info(f"Обработка поставщика {supplier_name}")
             supplier_data = process_supplier(gsheets, spreadsheet_id, supplier_name, mapping)
 
@@ -1155,11 +1150,6 @@ def main():
                     all_groups.append(groups_with_source)
                 else:
                     logger.error(f"Ошибка валидации данных групп для {supplier_name}")
-
-            # Пауза между поставщиками (кроме последнего)
-            if supplier_index < len(suppliers_list) - 1:
-                logger.info(f"Пауза {CONFIG['DELAY_BETWEEN_SUPPLIERS']} сек перед следующим поставщиком...")
-                time.sleep(CONFIG["DELAY_BETWEEN_SUPPLIERS"])
 
         # Объединение данных
         products_cols, groups_cols = get_template_columns()
