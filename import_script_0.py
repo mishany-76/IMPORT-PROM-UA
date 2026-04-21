@@ -6,20 +6,14 @@ from googleapiclient.discovery import build
 import time
 from datetime import datetime
 
-# Настройка логирования — вывод и в файл, и в консоль (для GitHub Actions)
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename='google_sheets_import.log',
+    encoding='utf-8'
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Вывод в файл
-file_handler = logging.FileHandler('google_sheets_import.log', encoding='utf-8')
-file_handler.setFormatter(log_formatter)
-logger.addHandler(file_handler)
-
-# Вывод в консоль (stdout) — видно в GitHub Actions
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_formatter)
-logger.addHandler(console_handler)
 
 # Конфигурация
 CONFIG = {
