@@ -14,18 +14,19 @@ from datetime import datetime, timedelta
 # ==================== КОНФИГУРАЦИЯ ====================
 SPREADSHEET_KEY = "1p_Tb8LOEFA5V9PqVsUpzUJdDnGDICQgmjMWQdssROVk"  # Ключ таблицы
 TARGET_COLUMN = "Import_Subscribers"  # Название столбца для поиска email
-SCRIPTS_TO_RUN = [
-    "yml_parser_FOOTBALLERS.py",
-    #"yml_parser_SPECULANT.py",
-    "yml_parser_KIRS.py",
-    "yml_parser_MOYDROP.py",
-    "yml_parser_IZIDROP.py",
-    "yml_parser_AGER.py",
-    "import_script_0.py",
-    "IMPORT_PROM_UA.py",
-    "Product_Correction.py",
-]  # Список скриптов для запуска
-DELAY_BETWEEN_SCRIPTS = 60  # Задержка между скриптами в секундах
+# Словарь: скрипт → пауза в секундах ПОСЛЕ его выполнения (перед следующим скриптом).
+# Большая пауза перед import_script_0.py достигается через паузу после yml_parser_AGER.py (последний парсер).
+SCRIPTS_TO_RUN = {
+    "yml_parser_FOOTBALLERS.py": 60,   # пауза 60 сек после
+    #"yml_parser_SPECULANT.py": 60,
+    "yml_parser_KIRS.py":       60,    # пауза 60 сек после
+    "yml_parser_MOYDROP.py":    60,    # пауза 60 сек после
+    "yml_parser_IZIDROP.py":    60,    # пауза 60 сек после
+    "yml_parser_AGER.py":       120,   # пауза 120 сек после — даём Google API отдохнуть перед import_script_0.py
+    "import_script_0.py":       90,    # пауза 90 сек после
+    "IMPORT_PROM_UA.py":        60,    # пауза 60 сек после
+    "Product_Correction.py":    0,     # последний скрипт, пауза не нужна
+}
 LOG_FILE_TO_CHECK = "feed_processor.log"  # Лог-файл для проверки
 MAX_LOG_LINES = 200  # Максимальное количество строк в логе
 API_DELAY = 5  # Задержка между запросами к API
@@ -235,7 +236,7 @@ def run_scripts_sequentially():
     execution_times = {}
     report_text = "" # Будущий текст для Telegram
 
-    for script_name in SCRIPTS_TO_RUN:
+    for script_name, delay_after in SCRIPTS_TO_RUN.items():
         if not os.path.exists(script_name):
             logging.error(f"Скрипт {script_name} не найден!")
             continue
@@ -282,10 +283,10 @@ def run_scripts_sequentially():
                 print(f"ВНИМАНИЕ: {script_name} завершился с ошибкой. Google Apps Script запускается принудительно...")
             trigger_google_apps_script(GOOGLE_APPS_SCRIPT_URL)
 
-        if script_name != SCRIPTS_TO_RUN[-1]:
-            current_delay = max(DELAY_BETWEEN_SCRIPTS, exec_time * 0.1)
-            logging.info(f"Ожидание {current_delay:.1f} сек перед следующим скриптом...")
-            time.sleep(current_delay)
+        if delay_after > 0:
+            logging.info(f"Ожидание {delay_after} сек перед следующим скриптом...")
+            print(f"Ожидание {delay_after} сек перед следующим скриптом...")
+            time.sleep(delay_after)
 
     # Формирование финальной статистики
     total_time = time.time() - total_start_time
