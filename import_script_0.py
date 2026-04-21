@@ -1093,9 +1093,9 @@ def validate_dataframe(df, sheet_type):
         if df[col].dtype == 'object':
             unusual_chars = df[col].astype(str).str.contains('[^\\w\\s.,;:()\\[\\]{}"\'<>?!@#$%^&*+=\\-/\\\\\\\\]',
                                                              regex=True)
-        if unusual_chars.any():
-            unusual_count = unusual_chars.sum()
-            logger.warning(f"Column '{col}' has {unusual_count} cells with unusual characters")
+            if unusual_chars.any():
+                unusual_count = unusual_chars.sum()
+                logger.warning(f"Column '{col}' has {unusual_count} cells with unusual characters")
 
             # Check for duplicate column names (would cause issues with pandas)
         if len(df.columns) != len(set(df.columns)):
