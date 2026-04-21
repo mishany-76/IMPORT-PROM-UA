@@ -4,14 +4,17 @@ import logging
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import time
+import sys
 from datetime import datetime
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='google_sheets_import.log',
-    encoding='utf-8'
+    handlers=[
+        logging.FileHandler('google_sheets_import.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout) # Теперь ошибки полетят в консоль GitHub!
+    ]
 )
 logger = logging.getLogger(__name__)
 
