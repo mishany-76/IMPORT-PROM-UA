@@ -256,13 +256,14 @@ def dump_script_log(log_file: str, script_name: str, last_n_lines: int = 80):
 
 # Маппинг: скрипт → его лог-файл (добавьте сюда другие скрипты если нужно)
 SCRIPT_LOG_FILES = {
-    "import_script_0.py":    "google_sheets_import.log",
+    "import_script_0.py": "google_sheets_import.log",
     "yml_parser_FOOTBALLERS.py": "feed_processor.log",
-    "yml_parser_KIRS.py":    "feed_processor.log",
+    "yml_parser_KIRS.py": "feed_processor.log",
     "yml_parser_MOYDROP.py": "feed_processor.log",
     "yml_parser_IZIDROP.py": "feed_processor.log",
-    "yml_parser_AGER.py":    "feed_processor.log",
-    "IMPORT_PROM_UA.py":     "feed_processor.log",
+    "yml_parser_BAGSROOM.py": "feed_processor.log",
+    "yml_parser_AGER.py": "feed_processor.log",
+    "IMPORT_PROM_UA.py": "feed_processor.log",
     "Product_Correction.py": "feed_processor.log",
 }
 
