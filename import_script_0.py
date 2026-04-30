@@ -25,7 +25,8 @@ CONFIG = {
         "IZIDROP": "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY",
         "MOYDROP": "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs",
         #"SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
-        "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg"
+        "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg",
+        "BAGSROOM": "1CGgGZH90m7Pa7AB9RgchF-4uxyeAF88VuZlKzW4FkgQ"
     },
     "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
     "DELAY_BETWEEN_REQUESTS": 1.1,
