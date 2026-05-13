@@ -621,6 +621,14 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
         location_col_target_idx = find_column_index(updated_target_headers, 'Де_знаходиться_товар')
         type_col_target_idx = find_column_index(updated_target_headers, 'Тип_товару')
 
+        # Индексы столбцов цен в исходнике
+        price_col_source_idx = find_column_index(source_headers, 'Ціна')
+        price_from_col_source_idx = find_column_index(source_headers, 'Ціна_від')
+        # Индексы столбцов цен и скидки в целевой таблице
+        price_col_target_idx = find_column_index(updated_target_headers, 'Ціна')
+        price_from_col_target_idx = find_column_index(updated_target_headers, 'Ціна_від')
+        discount_col_target_idx = find_column_index(updated_target_headers, 'Знижка')
+
         if supplier_col_source_idx == -1:
             logging.warning(
                 "Столбец 'Особисті_нотатки' не найден в исходной таблице. Функции 'Ярлик', 'Де_знаходиться_товар' и 'Тип_товару' не будут работать корректно.")
@@ -724,6 +732,7 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
                             'MOYDROP': 'Одеса',
                             'SPECULANT': 'Полтава',
                             'KIRS': 'Дніпро',
+                            'BAGSROOM': 'Київ',
                         }
                         new_location_value = location_map.get(current_supplier, '')
                         if target_row_data[location_col_target_idx] != new_location_value:
@@ -745,6 +754,40 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
                                 'values': [[new_type_value]]
                             })
 
+                # 5. Обработка цен со скидкой (для всех листов, не только Products)
+                # Если в исходнике поле Ціна_від НЕ пустое — поставщик даёт скидку:
+                #   Ціна целевой  = Ціна_від исходника (цена БЕЗ скидки, т.е. полная/зачёркнутая)
+                #   Ціна_від целевой = Ціна исходника (цена СО скидкой, т.е. итоговая)
+                #   Знижка = Ціна_від исходника - Ціна исходника
+                # Если Ціна_від пустое — скидки нет, копируем как раньше (маппинг уже отработал выше)
+                if (price_col_source_idx != -1 and price_from_col_source_idx != -1
+                        and price_col_source_idx < len(source_row)
+                        and price_from_col_source_idx < len(source_row)):
+                    src_price = source_row[price_col_source_idx].strip()
+                    src_price_from = source_row[price_from_col_source_idx].strip()
+                    if src_price_from:  # Есть скидка
+                        # Ціна целевой <- Ціна_від исходника
+                        if price_col_target_idx != -1 and price_col_target_idx < len(target_row_data):
+                            if target_row_data[price_col_target_idx] != src_price_from:
+                                target_col_letter = get_column_letter(price_col_target_idx)
+                                cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                                update_operations_batch_format.append({'range': cell_range_a1, 'values': [[src_price_from]]})
+                        # Ціна_від целевой <- Ціна исходника
+                        if price_from_col_target_idx != -1 and price_from_col_target_idx < len(target_row_data):
+                            if target_row_data[price_from_col_target_idx] != src_price:
+                                target_col_letter = get_column_letter(price_from_col_target_idx)
+                                cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                                update_operations_batch_format.append({'range': cell_range_a1, 'values': [[src_price]]})
+                        # Знижка = Ціна_від исходника - Ціна исходника
+                        if discount_col_target_idx != -1 and price_from_col_target_idx < len(target_row_data):
+                            try:
+                                discount_value = str(float(src_price_from.replace(',', '.')) - float(src_price.replace(',', '.')))
+                            except (ValueError, ZeroDivisionError):
+                                discount_value = ''
+                            if discount_value and target_row_data[discount_col_target_idx] != discount_value:
+                                target_col_letter = get_column_letter(discount_col_target_idx)
+                                cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                                update_operations_batch_format.append({'range': cell_range_a1, 'values': [[discount_value]]})
 
             else:
                 # Этот продукт есть в исходнике, но нет в целевой -> ДОБАВИТЬ
@@ -784,12 +827,36 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
                             'MOYDROP': 'Одеса',
                             'SPECULANT': 'Полтава',
                             'KIRS': 'Дніпро',
+                            'BAGSROOM': 'Київ',
                         }
                         new_row[location_col_target_idx] = location_map.get(current_supplier, '')
 
                     # 4. Вставка "r" в "Тип_товару"
                     if type_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
                         new_row[type_col_target_idx] = 'r'
+
+                # 5. Обработка цен со скидкой для новых строк
+                # Если в исходнике поле Ціна_від НЕ пустое — поставщик даёт скидку:
+                #   Ціна целевой  = Ціна_від исходника (полная/зачёркнутая цена)
+                #   Ціна_від целевой = Ціна исходника (цена со скидкой)
+                #   Знижка = Ціна_від исходника - Ціна исходника
+                # Если Ціна_від пустое — скидки нет, маппинг уже скопировал значения как есть выше
+                if (price_col_source_idx != -1 and price_from_col_source_idx != -1
+                        and price_col_source_idx < len(source_row)
+                        and price_from_col_source_idx < len(source_row)):
+                    src_price = source_row[price_col_source_idx].strip()
+                    src_price_from = source_row[price_from_col_source_idx].strip()
+                    if src_price_from:  # Есть скидка — переставляем и считаем скидку
+                        if price_col_target_idx != -1 and price_col_target_idx < len(new_row):
+                            new_row[price_col_target_idx] = src_price_from
+                        if price_from_col_target_idx != -1 and price_from_col_target_idx < len(new_row):
+                            new_row[price_from_col_target_idx] = src_price
+                        if discount_col_target_idx != -1 and discount_col_target_idx < len(new_row):
+                            try:
+                                discount_value = str(float(src_price_from.replace(',', '.')) - float(src_price.replace(',', '.')))
+                            except (ValueError, ZeroDivisionError):
+                                discount_value = ''
+                            new_row[discount_col_target_idx] = discount_value
 
                 new_rows_to_add_data.append(new_row)
 
