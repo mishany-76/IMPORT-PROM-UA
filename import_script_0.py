@@ -24,7 +24,7 @@ CONFIG = {
         "FOOTBALLERS": "1F1VtMQHMMd_uON81exgVmpOz2xVZNm9aHSVucVBZZW0",
         "IZIDROP": "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY",
         "MOYDROP": "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs",
-        #"SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
+        # "SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
         "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg",
         "BAGSROOM": "1CGgGZH90m7Pa7AB9RgchF-4uxyeAF88VuZlKzW4FkgQ"
     },
@@ -284,29 +284,58 @@ class GoogleSheetsManager:
 
                                 if new_value != old_value:
                                     update_needed = True
-                                    if col_idx < len(update_values):
-                                        update_values[col_idx] = new_value
-                                    else:
-                                        update_values.extend([''] * (col_idx - len(update_values) + 1))
-                                        update_values[col_idx] = new_value
+                                if col_idx < len(update_values):
+                                    update_values[col_idx] = new_value
+                                else:
+                                    update_values.extend([''] * (col_idx - len(update_values) + 1))
+                                    update_values[col_idx] = new_value
 
                     if update_needed:
                         updates.append((row_idx, update_values))
                 else:
                     new_rows = pd.concat([new_rows, pd.DataFrame([row])], ignore_index=True)
 
-            # Остальная часть функции остается без изменений
-            for row_idx, row_data in updates:
-                range_name = f"{sheet_name}!A{row_idx}"
+            # --- НОВЫЙ КОД: Пакетное обновление существующих строк (Батчи + Чанки) ---
+            if updates:
+                logger.info(f"Подготовка к пакетному обновлению {len(updates)} строк в {sheet_name}...")
 
-                self._execute_with_retry(
-                    self.service.spreadsheets().values().update(
-                        spreadsheetId=spreadsheet_id,
-                        range=range_name,
-                        valueInputOption='RAW',
-                        body={'values': [row_data]}
+                # Формируем список словарей для values().batchUpdate()
+                batch_update_data = []
+                for row_idx, row_data in updates:
+                    range_name = f"{sheet_name}!A{row_idx}"
+                    batch_update_data.append({
+                        'range': range_name,
+                        'values': [row_data]
+                    })
+
+                # Разбиваем на чанки по 500 строк, чтобы не превысить лимиты Google API
+                CHUNK_SIZE = 500
+                total_chunks = (len(batch_update_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+                for chunk_idx in range(total_chunks):
+                    chunk_start = chunk_idx * CHUNK_SIZE
+                    chunk_end = min(chunk_start + CHUNK_SIZE, len(batch_update_data))
+                    chunk_data = batch_update_data[chunk_start:chunk_end]
+
+                    logger.info(
+                        f"Отправка чанка обновлений {chunk_idx + 1}/{total_chunks} (строки {chunk_start + 1}-{chunk_end}) в {sheet_name}...")
+
+                    body = {
+                        'valueInputOption': 'RAW',
+                        'data': chunk_data
+                    }
+
+                    self._execute_with_retry(
+                        self.service.spreadsheets().values().batchUpdate(
+                            spreadsheetId=spreadsheet_id,
+                            body=body
+                        )
                     )
-                )
+
+                    # Небольшая пауза между чанками для надежности
+                    if chunk_idx < total_chunks - 1:
+                        time.sleep(1)
+            # --- КОНЕЦ ПАКЕТНОГО ОБНОВЛЕНИЯ ---
 
             if not new_rows.empty:
                 start_row = len(existing_values) + 1
@@ -463,40 +492,52 @@ class GoogleSheetsManager:
                         else:
                             seen_ids[current_id] = i
 
-                for idx, updated_row in rows_to_update.items():
-                    range_name = f"{sheet_name}!A{idx + 1}"
+                # --- НОВОЕ ПАКЕТНОЕ ОБНОВЛЕНИЕ СТРОК-ДУБЛИКАТОВ ---
+                if rows_to_update:
+                    update_data = []
+                    for idx, updated_row in rows_to_update.items():
+                        update_data.append({
+                            'range': f"{sheet_name}!A{idx + 1}",
+                            'values': [updated_row]
+                        })
 
-                    self._wait_if_needed()
-                    self.service.spreadsheets().values().update(
-                        spreadsheetId=spreadsheet_id,
-                        range=range_name,
-                        valueInputOption='RAW',
-                        body={'values': [updated_row]}
-                    ).execute()
-
-                    logger.info(
-                        f"Обновлена оригинальная строка {idx + 1} с данными из дубликатов: {updated_row[id_idx]}")
-
-                for row_idx in sorted(rows_to_delete, reverse=True):
-                    request = {
-                        'deleteDimension': {
-                            'range': {
-                                'sheetId': self._get_sheet_id(sheet_name),
-                                'dimension': 'ROWS',
-                                'startIndex': row_idx - 1,
-                                'endIndex': row_idx
-                            }
-                        }
+                    body = {
+                        'valueInputOption': 'RAW',
+                        'data': update_data
                     }
+                    self._wait_if_needed()
+                    self._execute_with_retry(
+                        self.service.spreadsheets().values().batchUpdate(
+                            spreadsheetId=spreadsheet_id,
+                            body=body
+                        )
+                    )
+                    logger.info(
+                        f"Обновлено {len(rows_to_update)} оригинальных строк с данными из дубликатов (Пакетный запрос).")
+
+                # --- НОВОЕ ПАКЕТНОЕ УДАЛЕНИЕ СТРОК-ДУБЛИКАТОВ ---
+                if rows_to_delete:
+                    delete_requests = []
+                    for row_idx in sorted(rows_to_delete, reverse=True):
+                        delete_requests.append({
+                            'deleteDimension': {
+                                'range': {
+                                    'sheetId': self._get_sheet_id(sheet_name),
+                                    'dimension': 'ROWS',
+                                    'startIndex': row_idx - 1,
+                                    'endIndex': row_idx
+                                }
+                            }
+                        })
 
                     self._wait_if_needed()
-                    self.service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={'requests': [request]}
-                    ).execute()
-
-                if rows_to_delete:
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
+                    self._execute_with_retry(
+                        self.service.spreadsheets().batchUpdate(
+                            spreadsheetId=spreadsheet_id,
+                            body={'requests': delete_requests}
+                        )
+                    )
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name} (Пакетный запрос).")
 
             else:
                 group_num_col = "Ідентифікатор_групи"
@@ -521,26 +562,29 @@ class GoogleSheetsManager:
                         else:
                             seen_groups[group_key] = i
 
-                for row_idx in sorted(rows_to_delete, reverse=True):
-                    request = {
-                        'deleteDimension': {
-                            'range': {
-                                'sheetId': self._get_sheet_id(sheet_name),
-                                'dimension': 'ROWS',
-                                'startIndex': row_idx - 1,
-                                'endIndex': row_idx
+                # --- НОВОЕ ПАКЕТНОЕ УДАЛЕНИЕ ДЛЯ ГРУПП ---
+                if rows_to_delete:
+                    delete_requests = []
+                    for row_idx in sorted(rows_to_delete, reverse=True):
+                        delete_requests.append({
+                            'deleteDimension': {
+                                'range': {
+                                    'sheetId': self._get_sheet_id(sheet_name),
+                                    'dimension': 'ROWS',
+                                    'startIndex': row_idx - 1,
+                                    'endIndex': row_idx
+                                }
                             }
-                        }
-                    }
+                        })
 
                     self._wait_if_needed()
-                    self.service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={'requests': [request]}
-                    ).execute()
-
-                if rows_to_delete:
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
+                    self._execute_with_retry(
+                        self.service.spreadsheets().batchUpdate(
+                            spreadsheetId=spreadsheet_id,
+                            body={'requests': delete_requests}
+                        )
+                    )
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов групп в {sheet_name} (Пакетный запрос).")
 
         except Exception as e:
             logger.error(f"Ошибка при удалении дубликатов в {sheet_name}: {e}")
