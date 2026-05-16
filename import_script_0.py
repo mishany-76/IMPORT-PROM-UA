@@ -1,1312 +1,1181 @@
-import gspread
-from google.oauth2.service_account import Credentials
+import pandas as pd
 import json
-import re
 import logging
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 import time
-from googleapiclient.discovery import build  # Импортируем функцию build для создания сервисного клиента
-from gspread.exceptions import WorksheetNotFound, APIError  # Импортируем исключения gspread
+from datetime import datetime
 
-# --- Настройка логирования ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename='google_sheets_import.log',
+    encoding='utf-8'
+)
+logger = logging.getLogger(__name__)
 
-# --- КОНФИГУРАЦИЯ ---
-SERVICE_ACCOUNT_FILE = 'key_sheet.json'  # Укажите путь к вашему файлу ключа
-SOURCE_SPREADSHEET_ID = '1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA'  # Замените на ID исходной таблицы
-TARGET_SPREADSHEET_ID = '1o6hic1hfDGfL6yynHjJD0cM8U_QaK_i_TERt19CQvOA'  # Замените на ID целевой таблицы
-
-# Базовые названия столбцов характеристик без суффикса, как они ДОЛЖНЫ БЫТЬ в целевой таблице,
-# если в исходнике найдены характеристики. Используется для формирования структуры и маппинга данных.
-BASE_TARGET_CHARACTERISTIC_COLUMNS = [
-    'Назва_Характеристики',
-    'Одиниця_виміру_Характеристики',
-    'Значення_Характеристики',
-]
-
-# Столбцы, которые должны присутствовать в целевой таблице
-# в дополнение к (столбцам из исходника с учетом правил характеристик).
-# Используется только для формирования структуры целевой таблицы.
-# ОБНОВЛЕНО: Добавлены новые столбцы согласно требованиям пользователя.
-ADDITIONAL_TARGET_COLUMNS = [
-    'Ярлик',
-    'Де_знаходиться_товар',
-    'Тип_товару',
-]
-
-# Конфигурация минимального количества пустых строк (новая)
-MIN_EMPTY_ROWS = 1000
-SHEETS_TO_ENSURE_EMPTY_ROWS = [
-    'Export Products Sheet',
-    'Export Groups Sheet',
-]
-
-# --- КОНФИГУРАЦИЯ КЛЮЧЕВЫХ СТОЛБЦОВ И СОРТИРОВКИ ПО ЛИСТАМ ---
-# Определите ключевые столбцы (для идентификации/сравнения) и столбец для сортировки
-# для каждого листа, который должен синхронизироваться по данным.
-# Ключи словаря - названия листов.
-# Значения - словари с ключами 'key_cols' (список имен ключевых столбцов) и 'sort_col' (имя столбца для сортировки исходника, или None).
-# Если лист не указан здесь, синхронизация ДАННЫХ для него будет пропущена, только структура скопируется как есть (без правил характеристик).
-SHEET_DATA_CONFIG = {
-    'Export Products Sheet': {
-        'key_cols': ['Код_товару', 'Ідентифікатор_товару'],
-        'sort_col': 'Особисті_нотатки',
+# Конфигурация
+CONFIG = {
+    "SERVICE_ACCOUNT_FILE": "key_sheet.json",
+    "MAPPING_FILE": "column_mapping.json",
+    "SUPPLIERS": {
+        "AGER": "1ls3HlH3cs3f-7GwBbnp7I7tYLxt9p-F80MmrUjsyk6M",
+        "FOOTBALLERS": "1F1VtMQHMMd_uON81exgVmpOz2xVZNm9aHSVucVBZZW0",
+        "IZIDROP": "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY",
+        "MOYDROP": "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs",
+        #"SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
+        "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg",
+        "BAGSROOM": "1CGgGZH90m7Pa7AB9RgchF-4uxyeAF88VuZlKzW4FkgQ"
     },
-    'Export Groups Sheet': {
-        'key_cols': ['Номер_групи', 'Назва_групи', 'Ідентифікатор_групи', 'Номер_батьківської_групи'],
-        'sort_col': None,  # Например, если сортировка для групп не нужна
-    },
-    # Добавьте сюда другие листы, если они требуют синхронизации данных
-    # Для листов не указанных здесь, будет выполнена только синхронизация структуры заголовков.
+    "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
+    "DELAY_BETWEEN_REQUESTS": 2,
+    "MAX_RETRIES": 7,
+    "BATCH_SIZE": 200
 }
 
 
-# --- АВТОРИЗАЦИЯ ---
-def get_google_sheet_client(credentials):
-    """Авторизуется в Google Sheets API и возвращает gspread Client, используя готовые учетные данные."""
-    try:
-        client = gspread.authorize(credentials)
-        logging.info("Авторизация gspread Client успешна.")
-        return client
-    except Exception as e:
-        logging.error(f"Ошибка при авторизации gspread Client: {e}")
-        raise
+class GoogleSheetsManager:
+    def __init__(self):
+        self.service = self._authenticate()
+        self.last_request_time = datetime.now()
+        self.spreadsheet_id = CONFIG["OUTPUT_SPREADSHEET_ID"]
+        self._sheet_id_cache = {}  # Кэш sheetId по имени листа
 
-
-def get_sheets_api_v4_service(credentials):
-    """Создает и возвращает клиент Sheets API v4 (googleapiclient), используя готовые учетные данные."""
-    try:
-        service = build('sheets', 'v4', credentials=credentials)
-        logging.info("Клиент Google Sheets API v4 (googleapiclient) успешно создан.")
-        return service
-    except Exception as e:
-        logging.error(f"Ошибка при создании клиента Google Sheets API v4: {e}")
-        raise
-
-
-# --- УТИЛИТЫ ДЛЯ РАБОТЫ С ТАБЛИЦАМИ ---
-def get_sheet_by_name(spreadsheet, sheet_name):
-    """Получает лист по имени, создает, если не существует."""
-    try:
-        sheet = spreadsheet.worksheet(sheet_name)
-        logging.info(f"Лист '{sheet_name}' найден в таблице '{spreadsheet.title}'.")
-        return sheet
-    except WorksheetNotFound:
-        logging.warning(f"Лист '{sheet_name}' не найден в таблице '{spreadsheet.title}'. Создаем новый...")
+    def _authenticate(self):
         try:
-            # gspread создает лист с небольшим начальным размером, при записи он расширится
-            sheet = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="20")
-            logging.info(f"Лист '{sheet_name}' успешно создан.")
-            return sheet
+            scopes = ['https://www.googleapis.com/auth/spreadsheets']
+            credentials = service_account.Credentials.from_service_account_file(
+                CONFIG["SERVICE_ACCOUNT_FILE"], scopes=scopes)
+            return build('sheets', 'v4', credentials=credentials)
         except Exception as e:
-            logging.error(f"Ошибка при создании листа '{sheet_name}': {e}")
-            # При ошибке создания листа - выбрасываем исключение, т.к. на этот лист нужно синхронизировать
+            logger.error(f"Ошибка аутентификации: {e}")
             raise
 
-
-def get_headers(worksheet):
-    """Получает заголовки столбцов из первой строки листа."""
-    try:
-        headers = worksheet.row_values(1)
-        if not headers:
-            return []
-        # Очистка заголовков от возможных пробелов и пустых строк в конце
-        headers = [header.strip() for header in headers]
-        while headers and not headers[-1]:
-            headers.pop()
-        return headers
-    except Exception as e:
-        logging.error(f"Ошибка при чтении заголовков листа '{worksheet.title}': {e}")
-        raise
-
-
-def find_column_index(headers, column_name):
-    """Находит индекс столбца по имени (0-based). Возвращает -1, если не найден."""
-    try:
-        return headers.index(column_name)
-    except ValueError:
-        return -1
-
-
-# --- Собственная функция для преобразования индекса столбца в букву ---
-def get_column_letter(col_index_0based):
-    """Преобразует 0-базовый индекс столбца в его буквенное представление (A, B, AA, etc.)."""
-    letter = ''
-    while col_index_0based >= 0:
-        remainder = col_index_0based % 26
-        letter = chr(ord('A') + remainder) + letter
-        col_index_0based = col_index_0based // 26 - 1
-    return letter
-
-
-def build_target_headers_with_char_rules(source_headers, sheet_title):
-    """
-    Формирует список требуемых заголовков для целевой таблицы,
-    применяя правила переименования характеристик и сохраняя ОРИГИНАЛЬНЫЙ ОТНОСИТЕЛЬНЫЙ порядок.
-    Характеристические блоки добавляются ТОЛЬКО если характеристики найдены в исходном листе.
-    """
-    max_n = 0
-    char_pattern = re.compile(r'^(Назва|Одиниця_виміру|Значення)_Характеристики(?:_(\d+))?$')
-
-    source_has_any_characteristic_headers = False
-
-    # ИСПРАВЛЕНИЕ 1: Первый проход для определения max_n с учетом повторяющихся без суффикса столбцов
-    base_char_counts = {}
-    for header in source_headers:
-        header_stripped = header.strip()
-        if not header_stripped:
-            continue
-        match = char_pattern.match(header_stripped)
-        if match:
-            source_has_any_characteristic_headers = True
-            base_name_part = match.group(1)
-            base_name = base_name_part + '_Характеристики'
-            n_str = match.group(2)
-            
-            if n_str:
-                n = int(n_str)
-                base_char_counts[base_name] = max(base_char_counts.get(base_name, 0), n)
-            else:
-                base_char_counts[base_name] = base_char_counts.get(base_name, 0) + 1
-                n = base_char_counts[base_name]
-                
-            max_n = max(max_n, n)
-
-    final_char_sets_in_target = 0
-    if source_has_any_characteristic_headers and BASE_TARGET_CHARACTERISTIC_COLUMNS:
-        if max_n == 0:
-            final_char_sets_in_target = 1
-        else:
-            final_char_sets_in_target = max_n
-
-    elif source_has_any_characteristic_headers and not BASE_TARGET_CHARACTERISTIC_COLUMNS:
-        logging.warning(
-            "В исходнике найдены характеристики, но BASE_TARGET_CHARACTERISTIC_COLUMNS в конфигурации пуст. Блоки характеристик не будут добавлены в целевую структуру для этого листа.")
-
-    final_target_headers = []
-    added_char_block_for_set = set()
-    
-    # ИСПРАВЛЕНИЕ 2: Второй проход со счетчиками для точного позиционирования
-    base_char_counts_pass2 = {}
-    
-    for source_index, source_header in enumerate(source_headers):
-        header_stripped = source_header.strip()
-        if not header_stripped:
-            continue
-
-        match = char_pattern.match(header_stripped)
-
-        if match:
-            base_name_part = match.group(1)
-            base_name = base_name_part + '_Характеристики'
-            n_str = match.group(2)
-
-            if n_str:
-                n = int(n_str)
-                base_char_counts_pass2[base_name] = max(base_char_counts_pass2.get(base_name, 0), n)
-            else:
-                base_char_counts_pass2[base_name] = base_char_counts_pass2.get(base_name, 0) + 1
-                n = base_char_counts_pass2[base_name]
-
-            if n <= final_char_sets_in_target and n not in added_char_block_for_set:
-                if BASE_TARGET_CHARACTERISTIC_COLUMNS:
-                    final_target_headers.extend(BASE_TARGET_CHARACTERISTIC_COLUMNS)
-                    added_char_block_for_set.add(n)
-
-        else:
-            final_target_headers.append(header_stripped)
-
-    if sheet_title != 'Export Groups Sheet':
-        seen_final = set(final_target_headers)
-        for additional_header in ADDITIONAL_TARGET_COLUMNS:
-            if additional_header.strip() and additional_header.strip() not in seen_final:
-                final_target_headers.append(additional_header.strip())
-                seen_final.add(additional_header.strip())
-    else:
-        logging.info(
-            f"Для листа '{sheet_title}' дополнительные столбцы 'Ярлик', 'Де_знаходиться_товар', 'Тип_товару' не будут добавлены.")
-
-    return final_target_headers
-
-
-def ensure_target_structure(worksheet, source_headers):
-    """
-    Проверяет и обновляет заголовки целевого листа, чтобы они соответствовали
-    структуре, определенной на основе source_headers с правилами характеристик.
-    Возвращает актуальный список заголовков целевой таблицы.
-    """
-    required_target_headers = build_target_headers_with_char_rules(source_headers, worksheet.title)
-
-    logging.info(f"Чтение текущих заголовков целевого листа '{worksheet.title}'...")
-    current_target_headers = get_headers(worksheet)
-
-    logging.debug(f"Требуемые заголовки целевого листа: {required_target_headers}")
-    logging.debug(f"Текущие заголовки целевого листа: {current_target_headers}")
-
-    if current_target_headers != required_target_headers:
-        logging.warning(
-            f"Заголовки в целевом листе '{worksheet.title}' не соответствуют требуемой структуре или порядку. Обновляем заголовки...")
-        try:
-            num_required_cols = len(required_target_headers)
-            if num_required_cols == 0:
-                logging.warning(
-                    "Результирующий список требуемых заголовков оказался пуст. Пропускаем обновление заголовков.")
-                current_values = worksheet.get_all_values()
-                current_rows = len(current_values)
-                if current_rows > 0:
-                    try:
-                        worksheet.delete_rows(1, 1)
-                        logging.info(f"Заголовки в листе '{worksheet.title}' успешно очищены.")
-                    except Exception as e:
-                        logging.error(f"Ошибка при очистке заголовков в листе '{worksheet.title}': {e}")
-
-                return required_target_headers
-
-            end_column_letter = get_column_letter(num_required_cols - 1)
-            range_name = f'A1:{end_column_letter}1'
-
-            logging.info(f"Запись заголовков в целевой лист '{worksheet.title}' в диапазон '{range_name}'...")
-            worksheet.update([required_target_headers], range_name=range_name)
-            logging.info(f"Заголовки в листе '{worksheet.title}' успешно обновлены.")
-            return required_target_headers
-
-        except Exception as e:
-            logging.error(f"Ошибка при записи обновленных заголовков в лист '{worksheet.title}': {e}")
-            raise
-
-    else:
-        logging.info(f"Заголовки в целевом листе '{worksheet.title}' уже соответствуют требуемой структуре.")
-        return current_target_headers
-
-
-def build_column_mapping(source_headers, target_headers):
-    """
-    Создает словарь соответствия индексов столбцов: source_index -> target_index.
-    Маппит исходные характеристики с _N на базовые имена в целевой.
-    Маппит остальные столбцы по имени.
-    Использует target_headers, сформированные с правилами характеристик.
-    """
-    mapping = {}
-    target_header_to_index = {header: index for index, header in enumerate(target_headers)}
-
-    char_pattern = re.compile(r'^(Назва|Одиниця_виміру|Значення)_Характеристики(?:_(\d+))?$')
-    base_char_pattern = re.compile(r'^(Назва|Одиниця_виміру|Значення)_Характеристики$')
-
-    target_base_char_indices = []
-    for idx, header in enumerate(target_headers):
-        if header in BASE_TARGET_CHARACTERISTIC_COLUMNS:
-            target_base_char_indices.append(idx)
-
-    is_structured_char_block = False
-    first_char_target_index = -1
-    num_target_char_sets = 0
-
-    if target_base_char_indices and BASE_TARGET_CHARACTERISTIC_COLUMNS:
-        base_len = len(BASE_TARGET_CHARACTERISTIC_COLUMNS)
-        if base_len > 0 and len(target_base_char_indices) > 0 and len(target_base_char_indices) % base_len == 0:
-            all_blocks_sequential_and_match = True
-            for i in range(0, len(target_base_char_indices), base_len):
-                current_block_start_idx_in_target_indices = i
-                start_idx_in_target_headers = target_base_char_indices[current_block_start_idx_in_target_indices]
-
-                expected_sequential_indices = list(
-                    range(start_idx_in_target_headers, start_idx_in_target_headers + base_len))
-                actual_indices_in_this_block = target_base_char_indices[i: i + base_len]
-
-                if actual_indices_in_this_block != expected_sequential_indices:
-                    all_blocks_sequential_and_match = False
-                    break
-
-                headers_in_block_in_target = []
-                for idx in actual_indices_in_this_block:
-                    if idx < len(target_headers):
-                        headers_in_block_in_target.append(target_headers[idx])
-                    else:
-                        all_blocks_sequential_and_match = False
-                        break
-
-                if headers_in_block_in_target != BASE_TARGET_CHARACTERISTIC_COLUMNS:
-                    all_blocks_sequential_and_match = False
-                    break
-
-            if all_blocks_sequential_and_match:
-                is_structured_char_block = True
-                first_char_target_index = target_base_char_indices[0]
-                num_target_char_sets = len(target_base_char_indices) // base_len
-                logging.debug(
-                    f"Обнаружена структурированная область характеристик в целевых заголовках. Начало: {first_char_target_index}, Наборов: {num_target_char_sets}")
-            else:
-                logging.warning(
-                    "Базовые названия характеристик найдены в целевых заголовках, но структура блоков нарушена. Маппинг характеристик может быть некорректен.")
-
-        else:
-            logging.warning(
-                "Количество базовых названий характеристик в целевых заголовках не кратно размеру базового набора, или размер базового набора 0. Маппинг характеристик может быть некорректен.")
-
-    else:
-        pass 
-
-    # ИСПРАВЛЕНИЕ 3: Привязываем маппинг с учетом повторяющихся колонок без индексов
-    base_char_counts_map = {}
-
-    for source_index, source_header in enumerate(source_headers):
-        source_header_stripped = source_header.strip()
-        if not source_header_stripped:
-            continue
-
-        match = char_pattern.match(source_header_stripped)
-        if match:
-            base_name_part = match.group(1)
-            base_name = base_name_part + '_Характеристики'
-            n_str = match.group(2)
-
-            if n_str:
-                n = int(n_str)
-                base_char_counts_map[base_name] = max(base_char_counts_map.get(base_name, 0), n)
-            else:
-                base_char_counts_map[base_name] = base_char_counts_map.get(base_name, 0) + 1
-                n = base_char_counts_map[base_name]
-
-            if is_structured_char_block and base_name in BASE_TARGET_CHARACTERISTIC_COLUMNS and n <= num_target_char_sets:
-                try:
-                    base_index_in_set = BASE_TARGET_CHARACTERISTIC_COLUMNS.index(base_name)
-                    target_index = first_char_target_index + (n - 1) * len(
-                        BASE_TARGET_CHARACTERISTIC_COLUMNS) + base_index_in_set
-
-                    if target_index < len(target_headers) and target_headers[target_index] == base_name:
-                        mapping[source_index] = target_index
-                    else:
-                        logging.warning(
-                            f"Рассчитанный целевой индекс {target_index} для '{source_header_stripped}' не соответствует базовому имени в целевых заголовках или выходит за пределы. Пропущено маппинг.")
-
-                except ValueError:
-                    logging.error(
-                        f"Критическая ошибка маппинга: Базовое имя характеристики '{base_name}' не найдено в BASE_TARGET_CHARACTERISTIC_COLUMNS при маппинге исходного '{source_header_stripped}'.")
-            elif source_header_stripped in target_header_to_index:
-                if base_char_pattern.match(source_header_stripped) and n == 1:
-                    mapping[source_index] = target_header_to_index[source_header_stripped]
-
-        else:
-            if source_header_stripped in target_header_to_index:
-                mapping[source_index] = target_header_to_index[source_header_stripped]
-
-    return mapping
-
-
-def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sheet, target_spreadsheet):
-    """Синхронизирует данные и структуру с одного листа исходной таблицы (на месте)."""
-    source_sheet_title = source_sheet.title
-    logging.info(f"--- Начинаем синхронизацию для листа: '{source_sheet_title}' ---")
-
-    try:
-        # Получаем или создаем целевой лист с тем же именем через gspread_client
-        target_sheet = get_sheet_by_name(target_spreadsheet, source_sheet_title)
-
-        # --- Чтение и анализ заголовков ---
-        logging.info(f"Чтение заголовков исходного листа '{source_sheet_title}'...")
-        source_headers = get_headers(source_sheet)
-        if not source_headers:
-            logging.warning(
-                f"Исходный лист '{source_sheet_title}' пуст или не содержит заголовков. Пропускаем синхронизацию для этого листа.")
-            # Если исходный лист пуст или без заголовков, мы все равно создадим целевой лист, но оставим его без заголовков и без данных.
-            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (исходник без заголовков) ---")
-            return
-
-        # --- Проверка и обновление структуры целевой таблицы (заголовков) ---
-        # Обновляем структуру независимо от наличия конфигурации данных
-        updated_target_headers = ensure_target_structure(target_sheet, source_headers)
-
-        # --- Определение ключевых столбцов и столбца сортировки для этого листа ---
-        sheet_config = SHEET_DATA_CONFIG.get(source_sheet_title)
-
-        if not sheet_config:
-            logging.info(
-                f"Для листа '{source_sheet_title}' нет конфигурации данных в SHEET_DATA_CONFIG. Синхронизация данных пропущена.")
-            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (нет конфига данных) ---")
-            return
-
-        key_cols_names = sheet_config.get('key_cols', [])
-        sort_col_name = sheet_config.get('sort_col')
-
-        if not key_cols_names:
-            logging.warning(
-                f"В конфигурации для листа '{source_sheet_title}' не указаны ключевые столбцы ('key_cols'). Синхронизация данных пропущена.")
-            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (нет key_cols в конфиге) ---")
-            return
-
-        # Получаем индексы ключевых столбцов в исходнике и целевой
-        source_key_indices = []
-        missing_source_key_cols = []
-        for col_name in key_cols_names:
-            idx = find_column_index(source_headers, col_name)
-            if idx == -1:
-                missing_source_key_cols.append(col_name)
-            source_key_indices.append(idx)  # Индекс может быть -1
-
-        target_key_indices = []
-        missing_target_key_cols = []
-        for col_name in key_cols_names:
-            # Ищем индекс в обновленных заголовках целевой таблицы
-            idx = find_column_index(updated_target_headers, col_name)
-            if idx == -1:
-                missing_target_key_cols.append(col_name)
-            target_key_indices.append(idx)  # Индекс может быть -1
-
-        if missing_source_key_cols:
-            logging.error(
-                f"Ключевые столбцы для обработки данных отсутствуют в исходном листе '{source_sheet_title}': {missing_source_key_cols}. Синхронизация данных пропущена.")
-            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (нет key_cols в исходнике) ---")
-            return  # Нет ключевых колонок в исходнике, не можем синхронизировать данные
-
-        if missing_target_key_cols:
-            # Этого не должно произойти, если ensure_target_structure отработал корректно
-            # и build_target_headers_with_char_rules включил эти колонки, если они были в исходнике.
-            logging.error(
-                f"Ключевые столбцы для обработки данных отсутствуют в целевом листе '{source_sheet_title}' после обновления структуры: {missing_target_key_cols}. Критическая ошибка. Синхронизация данных пропущена.")
-            return  # Нет ключевых колонок в целевой, не можем синхронизировать данные
-
-        # Получаем индекс столбца сортировки в исходнике
-        source_sort_col_index = find_column_index(source_headers, sort_col_name) if sort_col_name else -1
-
-        # Создаем маппинг столбцов из исходной в целевую
-        logging.info("Построение маппинга столбцов между исходным и целевым листами...")
-        col_mapping = build_column_mapping(source_headers, updated_target_headers)
-
-        # --- Чтение данных ---
-        logging.info(f"Чтение данных из исходного листа '{source_sheet_title}'...")
-        source_data = source_sheet.get_all_values()[1:]  # Пропускаем заголовки
-        logging.info(f"Прочитано {len(source_data)} строк из исходного листа.")
-
-        if not source_data:
-            logging.warning(
-                f"В исходном листе '{source_sheet_title}' нет данных. Будет выполнено только удаление устаревших/дублирующихся строк из целевого листа.")
-
-        logging.info(f"Чтение данных из целевого листа '{source_sheet_title}'...")
-        target_data = target_sheet.get_all_values()[1:]  # Пропускаем заголовки
-        logging.info(f"Прочитано {len(target_data)} строк из целевого листа.")
-
-        if not source_data and not target_data:
-            logging.info(
-                f"Нет данных ни в исходном, ни в целевом листе '{source_sheet_title}'. Синхронизация данных не требуется.")
-            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (нет данных) ---")
-            return
-
-        # --- Сортировка исходных данных ---
-        if sort_col_name and source_sort_col_index != -1:
-            source_data.sort(key=lambda row: row[source_sort_col_index].strip() if len(
-                row) > source_sort_col_index else '')  # Сортируем по значению, удаляя пробелы
-            logging.info(f"Исходные данные отсортированы по '{sort_col_name}'.")
-
-        elif sort_col_name and source_sort_col_index == -1:
-            logging.warning(
-                f"Столбец сортировки '{sort_col_name}' указан в конфиге, но отсутствует в исходнике. Сортировка исходных данных пропущена.")
-
-        # --- Подготовка данных для синхронизации на месте и идентификация дубликатов в целевой ---
-        target_product_map = {}  # Key: product_key tuple, Value: target_row_index (0-based) первой встречи
-        target_row_data_by_index = {}  # Key: target_row_index (0-based), Value: target_row_data list (оригинал из чтения, дополненный до нужной длины)
-
-        rows_to_delete_indices_1based = []
-
-        max_key_idx_target = max(target_key_indices) if target_key_indices else -1
-        required_cols_len_target = len(updated_target_headers)
-
-        seen_target_keys = set()  
-
-        for row_index_0based, row in enumerate(target_data):
-            target_row_index_1based = row_index_0based + 2 
-
-            target_key_values = []
-            has_any_key_value = False
-            if len(row) > max_key_idx_target:
-                for key_idx in target_key_indices:
-                    key_value = row[key_idx].strip() if key_idx != -1 and key_idx < len(row) else ''
-                    target_key_values.append(key_value)
-                    if key_value:
-                        has_any_key_value = True
-
-            product_key = tuple(target_key_values)
-
-            if not has_any_key_value:
-                logging.debug(
-                    f"Строка {target_row_index_1based} в целевой таблице не имеет валидного ключа. Помечена на удаление.")
-                rows_to_delete_indices_1based.append(target_row_index_1based)
-            elif product_key in seen_target_keys:
-                logging.debug(
-                    f"Строка {target_row_index_1based} в целевой таблице является дубликатом ключа {product_key}. Помечена на удаление.")
-                rows_to_delete_indices_1based.append(target_row_index_1based)
-            else:
-                seen_target_keys.add(product_key)
-                target_product_map[product_key] = row_index_0based
-                processed_row_data = list(row)
-                if len(processed_row_data) < required_cols_len_target:
-                    processed_row_data.extend([''] * (required_cols_len_target - len(processed_row_data)))
-                elif len(processed_row_data) > required_cols_len_target:
-                    processed_row_data = processed_row_data[:required_cols_len_target]
-                target_row_data_by_index[row_index_0based] = processed_row_data  
-
-        logging.info(
-            f"Идентификация дубликатов и строк без ключа в целевой таблице завершена. Найдено {len([idx for idx in rows_to_delete_indices_1based if idx <= len(target_data) + 1])} строк для удаления на этом этапе.")
-
-        # --- Идентификация операций (Обновления, Добавления) ---
-        update_operations_batch_format = []
-        source_product_keys_seen = set()  
-        new_rows_to_add_data = []  
-
-        max_key_idx_source = max(source_key_indices) if source_key_indices else -1
-        source_num_cols = len(source_headers)
-
-        availability_col_source_idx = find_column_index(source_headers, 'Наявність')
-        supplier_col_source_idx = find_column_index(source_headers, 'Особисті_нотатки')
-        quantity_col_source_idx = find_column_index(source_headers, 'Кількість')
-
-        label_col_target_idx = find_column_index(updated_target_headers, 'Ярлик')
-        location_col_target_idx = find_column_index(updated_target_headers, 'Де_знаходиться_товар')
-        type_col_target_idx = find_column_index(updated_target_headers, 'Тип_товару')
-
-        if supplier_col_source_idx == -1:
-            logging.warning(
-                "Столбец 'Особисті_нотатки' не найден в исходной таблице. Функции 'Ярлик', 'Де_знаходиться_товар' и 'Тип_товару' не будут работать корректно.")
-
-        for source_row_index, source_row in enumerate(source_data):
-            source_row_1based = source_row_index + 2  
-
-            if len(source_row) <= max_key_idx_source:
-                continue  
-
-            source_key_values = []
-            has_any_key_value_source = False 
-            for key_idx in source_key_indices:
-                key_value = source_row[key_idx].strip() if key_idx != -1 and key_idx < len(source_row) else ''
-                source_key_values.append(key_value)
-                if key_value:
-                    has_any_key_value_source = True
-
-            if not has_any_key_value_source:
-                continue
-
-            product_key = tuple(source_key_values)
-            source_product_keys_seen.add(product_key) 
-
-            current_supplier = ''
-            if supplier_col_source_idx != -1 and supplier_col_source_idx < len(source_row):
-                current_supplier = source_row[supplier_col_source_idx].strip().upper()
-
-            if product_key in target_product_map:
-                target_row_index_0based = target_product_map[product_key]
-                target_row_data = target_row_data_by_index[target_row_index_0based]
-                target_row_number_1based = target_row_index_0based + 2  
-
-                for source_col_index in range(source_num_cols):
-                    if source_col_index in col_mapping:
-                        target_col_index_0based = col_mapping[source_col_index]
-
-                        if source_col_index < len(source_row) and target_col_index_0based < len(target_row_data):
-                            source_value = source_row[source_col_index]
-
-                            if source_col_index == availability_col_source_idx:
-                                if source_value.strip().upper() == 'TRUE' or source_value.strip() == '+':
-                                    source_value = '!'
-
-                            if source_col_index == quantity_col_source_idx:
-                                if source_value != target_row_data[target_col_index_0based]:
-                                    target_col_letter = get_column_letter(target_col_index_0based)
-                                    cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
-                                    update_operations_batch_format.append({
-                                        'range': cell_range_a1,
-                                        'values': [[source_value]]
-                                    })
-                            else:
-                                if source_value.strip() and source_value != target_row_data[target_col_index_0based]:
-                                    target_col_letter = get_column_letter(target_col_index_0based)
-                                    cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
-                                    update_operations_batch_format.append({
-                                        'range': cell_range_a1,
-                                        'values': [[source_value]]
-                                    })
-
-                if source_sheet_title != 'Export Groups Sheet':
-                    if label_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_label_value = 'Топ продаж'
-                        if target_row_data[label_col_target_idx] != new_label_value:
-                            target_col_letter = get_column_letter(label_col_target_idx)
-                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
-                            update_operations_batch_format.append({
-                                'range': cell_range_a1,
-                                'values': [[new_label_value]]
-                            })
-
-                    if location_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        location_map = {
-                            'AGER': 'Одеса',
-                            'IZIDROP': 'Одеса',
-                            'MOYDROP': 'Одеса',
-                            'SPECULANT': 'Полтава',
-                            'KIRS': 'Дніпро',
-                            'BAGSROOM': 'Київ',
-                        }
-                        new_location_value = location_map.get(current_supplier, '')
-                        if target_row_data[location_col_target_idx] != new_location_value:
-                            target_col_letter = get_column_letter(location_col_target_idx)
-                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
-                            update_operations_batch_format.append({
-                                'range': cell_range_a1,
-                                'values': [[new_location_value]]
-                            })
-
-                    if type_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_type_value = 'r'
-                        if target_row_data[type_col_target_idx] != new_type_value:
-                            target_col_letter = get_column_letter(type_col_target_idx)
-                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
-                            update_operations_batch_format.append({
-                                'range': cell_range_a1,
-                                'values': [[new_type_value]]
-                            })
-
-
-            else:
-                new_row = [''] * required_cols_len_target  
-                for source_col_index in range(source_num_cols):
-                    if source_col_index in col_mapping:
-                        target_col_index_0based = col_mapping[source_col_index]
-                        if source_col_index < len(source_row) and target_col_index_0based < len(new_row):
-                            source_value = source_row[source_col_index]
-
-                            if source_col_index == availability_col_source_idx:
-                                if source_value.strip().upper() == 'TRUE' or source_value.strip() == '+':
-                                    source_value = '!'
-
-                            if source_value.strip(): 
-                                new_row[target_col_index_0based] = source_value
-
-                if source_sheet_title != 'Export Groups Sheet':
-                    if label_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_row[label_col_target_idx] = 'Топ продаж'
-
-                    if location_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        location_map = {
-                            'AGER': 'Одеса',
-                            'IZIDROP': 'Одеса',
-                            'MOYDROP': 'Одеса',
-                            'SPECULANT': 'Полтава',
-                            'KIRS': 'Дніпро',
-                            'BAGSROOM': 'Київ',
-                        }
-                        new_row[location_col_target_idx] = location_map.get(current_supplier, '')
-
-                    if type_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_row[type_col_target_idx] = 'r'
-
-                new_rows_to_add_data.append(new_row)
-
-        logging.info(
-            f"Идентификация операций завершена. Найдено {len(update_operations_batch_format)} обновлений ячеек, {len(new_rows_to_add_data)} добавлений.")
-
-        for product_key, target_row_index_0based in target_product_map.items():
-            if product_key not in source_product_keys_seen:
-                target_row_index_1based = target_row_index_0based + 2
-                logging.debug(
-                    f"Уникальный ключ из целевой {product_key} не найден в исходнике. Строка {target_row_index_1based} помечена на удаление.")
-                rows_to_delete_indices_1based.append(target_row_index_1based)
-
-        logging.info(
-            f"Найдено всего {len(rows_to_delete_indices_1based)} строк для удаления (включая дубликаты в целевой, строки без ключа и отсутствующие в исходнике).")
-
-        BATCH_CHUNK_SIZE = 10000
-
-        if update_operations_batch_format:
-            total_ops = len(update_operations_batch_format)
-            total_chunks = (total_ops + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE
-            logging.info(
-                f"Отправка пакетных обновлений: {total_ops} ячеек, "
-                f"разбито на {total_chunks} чанков по {BATCH_CHUNK_SIZE}...")
-
-            batch_max_retries = 5
-            batch_retry_delay = 10
-
-            all_chunks_ok = True
-            for chunk_idx in range(total_chunks):
-                chunk_start = chunk_idx * BATCH_CHUNK_SIZE
-                chunk_end = min(chunk_start + BATCH_CHUNK_SIZE, total_ops)
-                chunk_data = update_operations_batch_format[chunk_start:chunk_end]
-
-                logging.info(
-                    f"  Чанк {chunk_idx + 1}/{total_chunks}: "
-                    f"операции {chunk_start + 1}-{chunk_end}...")
-
-                chunk_ok = False
-                for attempt in range(batch_max_retries):
-                    try:
-                        body = {
-                            'value_input_option': 'USER_ENTERED',
-                            'data': chunk_data
-                        }
-                        sheets_service.spreadsheets().values().batchUpdate(
-                            spreadsheetId=TARGET_SPREADSHEET_ID,
-                            body=body
-                        ).execute()
-                        logging.info(
-                            f"  Чанк {chunk_idx + 1}/{total_chunks} выполнен успешно.")
-                        chunk_ok = True
-                        break
-
-                    except Exception as e:
-                        is_retryable = (
-                                (hasattr(e, 'resp') and e.resp.status in [429, 500, 502, 503, 504]) or
-                                ("temporarily unavailable" in str(e).lower()) or
-                                ("bad gateway" in str(e).lower()) or
-                                ("backend error" in str(e).lower()) or
-                                ("timed out" in str(e).lower()) or
-                                ("-1" in str(e))
-                        )
-                        if attempt < batch_max_retries - 1 and is_retryable:
-                            logging.warning(
-                                f"  API Error при чанке {chunk_idx + 1}, "
-                                f"попытка {attempt + 1}: {e}. "
-                                f"Повторная попытка через {batch_retry_delay} сек...")
-                            time.sleep(batch_retry_delay)
-                        else:
-                            logging.error(
-                                f"  Критическая ошибка при чанке {chunk_idx + 1} "
-                                f"после {attempt + 1} попыток: {e}")
-                            raise
-
-                if not chunk_ok:
-                    logging.error(
-                        f"  Не удалось выполнить чанк {chunk_idx + 1}/{total_chunks}.")
-                    all_chunks_ok = False
-
-                if chunk_idx < total_chunks - 1:
-                    time.sleep(1)
-
-            if all_chunks_ok:
-                logging.info(
-                    f"Все {total_chunks} чанков ({total_ops} ячеек) успешно обновлены.")
-            else:
-                logging.warning(
-                    f"Пакетное обновление завершено с ошибками. "
-                    f"Проверьте лог выше для деталей.")
-
-        else:
-            logging.info("Нет операций обновления ячеек для выполнения.")
-
-        if rows_to_delete_indices_1based:
-            logging.info(f"Выполнение {len(rows_to_delete_indices_1based)} удалений строк...")
-            rows_to_delete_indices_1based.sort(reverse=True)
-
-            delete_max_retries = 5
-            delete_retry_delay = 5
-
-            for row_index_1based in rows_to_delete_indices_1based:
-                for delete_attempt in range(delete_max_retries):
-                    try:
-                        logging.debug(f"Попытка удаления строки {row_index_1based}...")
-                        target_sheet.delete_rows(row_index_1based) 
-                        logging.debug(f"Удалена строка {row_index_1based}.")
-                        time.sleep(1.1)
-                        break 
-                    except gspread.exceptions.APIError as e:
-                        if delete_attempt < delete_max_retries - 1 and (
-                                '429' in str(e) or '500' in str(e) or '502' in str(e) or '503' in str(e) or '-1' in str(
-                            e) or 'temporarily unavailable' in str(e).lower() or 'bad gateway' in str(
-                            e).lower() or 'backend error' in str(e).lower()):
-                            logging.warning(
-                                f"API Error (вероятно временная) при удалении строки {row_index_1based}: {e}. Повторная попытка через {delete_retry_delay} сек...")
-                            time.sleep(delete_retry_delay)
-                        else:
-                            logging.error(
-                                f"Критическая ошибка API при удалении строки {row_index_1based} после {delete_attempt + 1} попыток: {e}")
-                            break 
-
-                    except Exception as e:
-                        logging.error(f"Неожиданная ошибка при удалении строки {row_index_1based}: {e}")
-                        break 
-
-            else:
-                logging.error(
-                    f"Не удалось удалить строку после {delete_max_retries} попыток для листа '{source_sheet_title}'.")
-
-        logging.info("Выполнение удалений завершено.")
-
-        if new_rows_to_add_data:
-            logging.info(f"Выполнение {len(new_rows_to_add_data)} добавлений строк...")
-
-            max_retries_append = 5
-            retry_delay_seconds_append = 5
-
-            for attempt in range(max_retries_append):
-                try:
-                    logging.info(f"Попытка записи новых данных {attempt + 1}/{max_retries_append}...")
-                    required_cols_len = len(updated_target_headers)
-                    data_to_write = [] 
-                    for row in new_rows_to_add_data:
-                        processed_row = list(row)
-                        if len(processed_row) < required_cols_len:
-                            processed_row.extend([''] * (required_cols_len - len(processed_row)))
-                        elif len(processed_row) > required_cols_len:
-                            processed_row = processed_row[:required_cols_len]
-                        data_to_write.append(processed_row)
-
-                    if data_to_write: 
-                        target_sheet.append_rows(data_to_write,
-                                                 value_input_option='USER_ENTERED')  
-                        logging.info(
-                            f"Успешно записано {len(data_to_write)} новых строк в целевой лист '{source_sheet_title}'.")
-                    else:
-                        logging.info(f"Нет данных для добавления в целевой лист '{source_sheet_title}'.")
-
-                    break 
-
-                except gspread.exceptions.APIError as e:
-                    if attempt < max_retries_append - 1 and (
-                            '429' in str(e) or '500' in str(e) or '502' in str(e) or '503' in str(e) or '-1' in str(
-                        e) or 'temporarily unavailable' in str(e).lower() or 'bad gateway' in str(
-                        e).lower() or 'backend error' in str(e).lower()):
-                        logging.warning(
-                            f"API Error (вероятно временная) при добавлении строк: {e}. Повторная попытка через {retry_delay_seconds_append} сек...")
-                        time.sleep(retry_delay_seconds_append)
-                    else:
-                        logging.error(f"Критическая ошибка API при добавлении строк после {attempt + 1} попыток: {e}")
-                        raise  
-
-                except Exception as e:
-                    logging.error(f"Неожиданная ошибка при добавлении строк: {e}")
-                    raise 
-
-            else:
-                logging.error(
-                    f"Не удалось добавить строки после {max_retries_append} попыток для листа '{source_sheet_title}'.")
-
-        logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена ---")
-
-    except Exception as e:
-        logging.error(f"Произошла ошибка при синхронизации листа '{source_sheet_title}'. Error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-
-
-# --------------------------------------------------------------------------------------------------------------------
-
-def apply_price_discount(sheets_service, source_spreadsheet, target_spreadsheet, sheet_name='Export Products Sheet'):
-    """
-    Отдельная функция для обработки цен и скидок.
-    Запускается ПОСЛЕ основной синхронизации.
-    """
-    PRICE_CHUNK_SIZE = 10000
-
-    logging.info(f"--- ЗАПУСК ОБРАБОТКИ ЦЕН/СКИДОК для листа '{sheet_name}' ---")
-    try:
-        try:
-            source_sheet = source_spreadsheet.worksheet(sheet_name)
-        except WorksheetNotFound:
-            logging.warning(
-                f"Лист '{sheet_name}' не найден в исходной таблице. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        try:
-            target_sheet = target_spreadsheet.worksheet(sheet_name)
-        except WorksheetNotFound:
-            logging.warning(
-                f"Лист '{sheet_name}' не найден в целевой таблице. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        source_headers = get_headers(source_sheet)
-        target_headers = get_headers(target_sheet)
-
-        if not source_headers or not target_headers:
-            logging.warning(
-                f"Заголовки не найдены в одном из листов '{sheet_name}'. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        src_price_idx = find_column_index(source_headers, 'Ціна')
-        src_price_from_idx = find_column_index(source_headers, 'Ціна_від')
-
-        if src_price_idx == -1 or src_price_from_idx == -1:
-            logging.warning(
-                f"Столбцы 'Ціна' и/или 'Ціна_від' не найдены в исходном листе '{sheet_name}'. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        tgt_price_idx = find_column_index(target_headers, 'Ціна')
-        tgt_price_from_idx = find_column_index(target_headers, 'Ціна_від')
-        tgt_discount_idx = find_column_index(target_headers, 'Знижка')
-
-        if tgt_price_idx == -1:
-            logging.warning(
-                f"Столбец 'Ціна' не найден в целевом листе '{sheet_name}'. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        logging.info(
-            f"Индексы исходника: Ціна={src_price_idx}, Ціна_від={src_price_from_idx}. "
-            f"Индексы целевой:  Ціна={tgt_price_idx}, Ціна_від={tgt_price_from_idx}, "
-            f"Знижка={tgt_discount_idx}.")
-
-        logging.info(f"Чтение данных исходного листа '{sheet_name}' для обработки цен...")
-        source_data = source_sheet.get_all_values()[1:]
-        logging.info(f"Прочитано {len(source_data)} строк из исходного листа.")
-
-        if not source_data:
-            logging.info(f"Нет данных для обработки цен в листе '{sheet_name}'.")
-            return
-
-        key_cols = SHEET_DATA_CONFIG.get(sheet_name, {}).get('key_cols', [])
-        if not key_cols:
-            logging.warning(
-                f"Ключевые столбцы не определены для листа '{sheet_name}' в SHEET_DATA_CONFIG. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        src_key_indices = [find_column_index(source_headers, c) for c in key_cols]
-        tgt_key_indices = [find_column_index(target_headers, c) for c in key_cols]
-
-        if -1 in src_key_indices or -1 in tgt_key_indices:
-            logging.warning(
-                f"Не все ключевые столбцы найдены. "
-                f"src_key_indices={src_key_indices}, tgt_key_indices={tgt_key_indices}. "
-                f"Обработка цен/скидок пропущена.")
-            return
-
-        logging.info(f"Чтение данных целевого листа '{sheet_name}' для построения карты строк...")
-        target_data = target_sheet.get_all_values()[1:]
-        logging.info(f"Прочитано {len(target_data)} строк из целевого листа.")
-
-        target_row_map = {} 
-        for row_idx, row in enumerate(target_data):
-            key = tuple(
-                row[i].strip() if i < len(row) else ''
-                for i in tgt_key_indices
-            )
-            if any(k for k in key) and key not in target_row_map:
-                target_row_map[key] = row_idx + 2 
-
-        price_updates = []
-        rows_with_discount = 0
-
-        for src_row in source_data:
-            src_price = src_row[src_price_idx].strip() if src_price_idx < len(src_row) else ''
-            src_price_from = src_row[src_price_from_idx].strip() if src_price_from_idx < len(src_row) else ''
-
-            if not src_price_from or not src_price:
-                continue
-
-            def parse_price(val):
-                val = re.sub(r'\s+', '', val)
-                val = val.replace(',', '.')
-                return float(val)
-
+    def _wait_if_needed(self):
+        elapsed = (datetime.now() - self.last_request_time).total_seconds()
+        if elapsed < CONFIG["DELAY_BETWEEN_REQUESTS"]:
+            time.sleep(CONFIG["DELAY_BETWEEN_REQUESTS"] - elapsed)
+        self.last_request_time = datetime.now()
+
+    def _execute_with_retry(self, request):
+        for attempt in range(CONFIG["MAX_RETRIES"]):
             try:
-                p_base = parse_price(src_price)
-                p_from = parse_price(src_price_from)
-
-                if p_base == p_from:
-                    continue
-
-                if p_base > p_from:
-                    val_price = src_price
-                    val_price_from = src_price_from
-                    discount = p_base - p_from
-                else:
-                    val_price = src_price_from
-                    val_price_from = src_price
-                    discount = p_from - p_base
-
-            except ValueError:
-                continue
-
-            src_key = tuple(
-                src_row[i].strip() if i < len(src_row) else ''
-                for i in src_key_indices
-            )
-            tgt_row_num = target_row_map.get(src_key)
-            if tgt_row_num is None:
-                continue 
-
-            rows_with_discount += 1
-
-            tgt_price_col_letter = get_column_letter(tgt_price_idx)
-            price_updates.append({
-                'range': f"{sheet_name}!{tgt_price_col_letter}{tgt_row_num}",
-                'values': [[val_price]]
-            })
-
-            if tgt_price_from_idx != -1:
-                tgt_price_from_col_letter = get_column_letter(tgt_price_from_idx)
-                price_updates.append({
-                    'range': f"{sheet_name}!{tgt_price_from_col_letter}{tgt_row_num}",
-                    'values': [[val_price_from]]
-                })
-
-            if tgt_discount_idx != -1:
-                discount_str = str(round(discount, 2))
-                if discount_str.endswith('.0'):
-                    discount_str = discount_str[:-2]
-                tgt_discount_col_letter = get_column_letter(tgt_discount_idx)
-                price_updates.append({
-                    'range': f"{sheet_name}!{tgt_discount_col_letter}{tgt_row_num}",
-                    'values': [[discount_str]]
-                })
-
-        logging.info(
-            f"Найдено {rows_with_discount} строк со скидками. "
-            f"Подготовлено {len(price_updates)} операций обновления цен/скидок.")
-
-        if not price_updates:
-            logging.info("Нет операций для обновления цен/скидок.")
-            logging.info(f"--- Обработка цен/скидок для листа '{sheet_name}' завершена ---")
-            return
-
-        total_ops = len(price_updates)
-        total_chunks = (total_ops + PRICE_CHUNK_SIZE - 1) // PRICE_CHUNK_SIZE
-        logging.info(
-            f"Отправка обновлений цен/скидок: {total_ops} операций, "
-            f"{total_chunks} чанков по {PRICE_CHUNK_SIZE}...")
-
-        batch_max_retries = 5
-        batch_retry_delay = 10
-        all_chunks_ok = True
-
-        for chunk_idx in range(total_chunks):
-            chunk_start = chunk_idx * PRICE_CHUNK_SIZE
-            chunk_end = min(chunk_start + PRICE_CHUNK_SIZE, total_ops)
-            chunk_data = price_updates[chunk_start:chunk_end]
-
-            logging.info(
-                f"  Цены: чанк {chunk_idx + 1}/{total_chunks}, "
-                f"операции {chunk_start + 1}-{chunk_end}...")
-
-            chunk_ok = False
-            for attempt in range(batch_max_retries):
-                try:
-                    body = {
-                        'value_input_option': 'USER_ENTERED',
-                        'data': chunk_data
-                    }
-                    sheets_service.spreadsheets().values().batchUpdate(
-                        spreadsheetId=TARGET_SPREADSHEET_ID,
-                        body=body
-                    ).execute()
-                    logging.info(
-                        f"  Цены: чанк {chunk_idx + 1}/{total_chunks} выполнен успешно.")
-                    chunk_ok = True
-                    break
-
-                except Exception as e:
-                    is_retryable = (
-                            (hasattr(e, 'resp') and e.resp.status in [429, 500, 502, 503, 504]) or
-                            ("temporarily unavailable" in str(e).lower()) or
-                            ("bad gateway" in str(e).lower()) or
-                            ("backend error" in str(e).lower()) or
-                            ("timed out" in str(e).lower()) or
-                            ("-1" in str(e))
-                    )
-                    if attempt < batch_max_retries - 1 and is_retryable:
-                        logging.warning(
-                            f"  API Error при чанке цен {chunk_idx + 1}, "
-                            f"попытка {attempt + 1}: {e}. "
-                            f"Повторная попытка через {batch_retry_delay} сек...")
-                        time.sleep(batch_retry_delay)
-                    else:
-                        logging.error(
-                            f"  Критическая ошибка при чанке цен {chunk_idx + 1} "
-                            f"после {attempt + 1} попыток: {e}")
-                        raise
-
-            if not chunk_ok:
-                logging.error(
-                    f"  Не удалось выполнить чанк цен {chunk_idx + 1}/{total_chunks}.")
-                all_chunks_ok = False
-
-            if chunk_idx < total_chunks - 1:
-                time.sleep(1)
-
-        if all_chunks_ok:
-            logging.info(
-                f"Обработка цен/скидок завершена успешно: "
-                f"{rows_with_discount} строк, {total_ops} операций.")
-        else:
-            logging.warning(
-                f"Обработка цен/скидок завершена с ошибками. "
-                f"Проверьте лог выше.")
-
-    except Exception as e:
-        logging.error(f"Неожиданная ошибка в apply_price_discount: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-
-    logging.info(f"--- Обработка цен/скидок для листа '{sheet_name}' завершена ---")
-
-
-# --- НОВАЯ ФУНКЦИЯ: Проверка и добавление пустых строк ---
-def ensure_minimum_empty_rows(gspread_client, target_spreadsheet, sheet_name, min_empty_rows):
-    """
-    Проверяет лист в целевой таблице и добавляет строки,
-    если количество пустых строк (после последней строки с данными) меньше заданного минимума.
-    """
-    logging.info(f"--- Проверка и обеспечение минимума пустых строк ({min_empty_rows}) для листа: '{sheet_name}' ---")
-    try:
-        target_sheet = target_spreadsheet.worksheet(sheet_name)
-
-        all_values = target_sheet.get_all_values()
-
-        total_rows_in_sheet = len(all_values)
-
-        last_data_row_index_0based = -1  
-        for i in range(len(all_values) - 1, -1, -1):  
-            if any(cell.strip() for cell in all_values[i]):
-                last_data_row_index_0based = i
-                break
-
-        last_non_empty_row_1based = last_data_row_index_0based + 1
-
-        if last_data_row_index_0based == -1 and target_sheet.row_count > 0 and len(target_sheet.row_values(1)) > 0:
-            last_non_empty_row_1based = 1
-        elif last_data_row_index_0based == -1:
-            last_non_empty_row_1based = 0  
-
-        current_empty_rows = total_rows_in_sheet - last_non_empty_row_1based
-
-        current_rows_count = target_sheet.row_count  
-
-        current_empty_rows = current_rows_count - last_non_empty_row_1based
-
-        logging.info(
-            f"Лист '{sheet_name}' имеет {current_rows_count} всего строк, последняя строка с данными/заголовком: {last_non_empty_row_1based}. Текущее количество пустых строк: {current_empty_rows}.")
-
-        if current_empty_rows < min_empty_rows:
-            rows_to_add = min_empty_rows - current_empty_rows
-            logging.info(
-                f"Количество пустых строк ({current_empty_rows}) меньше минимума ({min_empty_rows}). Добавляем {rows_to_add} строк.")
-
-            new_total_rows = current_rows_count + rows_to_add
-
-            max_retries = 5
-            retry_delay = 5
-
-            for attempt in range(max_retries):
-                try:
-                    logging.info(
-                        f"Попытка изменения размера листа до {new_total_rows} строк ({attempt + 1}/{max_retries})...")
-                    target_sheet.resize(rows=new_total_rows)
-                    logging.info(f"Размер листа '{sheet_name}' успешно увеличен до {new_total_rows} строк.")
-                    break
-                except APIError as e:
-                    if attempt < max_retries - 1 and (
-                            '429' in str(e) or '500' in str(e) or '502' in str(e) or '503' in str(e) or '-1' in str(
-                        e) or 'temporarily unavailable' in str(e).lower() or 'bad gateway' in str(
-                        e).lower() or 'backend error' in str(e).lower()):
-                        logging.warning(
-                            f"API Error (вероятно временная) при изменении размера листа: {e}. Повторная попытка через {retry_delay} сек...")
-                        time.sleep(retry_delay)
-                    else:
-                        logging.error(
-                            f"Критическая ошибка API при изменении размера листа после {attempt + 1} попыток: {e}")
-                        break  
-
-                except Exception as e:
-                    logging.error(f"Неожиданная ошибка при изменении размера листа: {e}")
-                    break
-            else:
-                logging.error(f"Не удалось изменить размер листа '{sheet_name}' после {max_retries} попыток.")
-
-        else:
-            logging.info(
-                f"Текущее количество пустых строк ({current_empty_rows}) больше или равно минимуму ({min_empty_rows}). Изменений не требуется.")
-
-    except WorksheetNotFound:
-        logging.warning(f"Лист '{sheet_name}' не найден в целевой таблице. Проверка пустых строк пропущена.")
-    except Exception as e:
-        logging.error(f"Произошла ошибка при проверке/добавлении пустых строк в лист '{sheet_name}'. Error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-
-    logging.info(f"--- Проверка для листа '{sheet_name}' завершена ---")
-
-
-# --------------------------------------------------------------------------------------------------------------------
-
-def synchronize_all_sheets():
-    """Основная функция для синхронизации всех листов (структуры и данных) из исходной таблицы в целевую."""
-    logging.info("--- Запуск скрипта синхронизации Google Таблиц (структура и данные на месте) ---")
-    try:
-        # --- 1. Загрузка учетных данных сервисного аккаунта ---
-        try:
-            scopes = [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            credentials = Credentials.from_service_account_file(
-                SERVICE_ACCOUNT_FILE, scopes=scopes)
-            logging.info("Учетные данные сервисного аккаунта успешно загружены.")
-        except FileNotFoundError:
-            logging.error(f"Файл ключа сервисного аккаунта не найден: {SERVICE_ACCOUNT_FILE}")
-            return  
-        except Exception as e:
-            logging.error(f"Ошибка при загрузке учетных данных сервисного аккаунта: {e}")
-            return  
-
-        # --- 2. Авторизация gspread Client с использованием учетных данных ---
-        try:
-            gspread_client = get_google_sheet_client(credentials)
-        except Exception as e:
-            return  
-
-        # --- 3. Создание клиента Sheets API v4 (googleapiclient) с использованием тех же учетных данных ---
-        try:
-            sheets_service = get_sheets_api_v4_service(credentials)
-        except Exception as e:
-            import traceback
-            logging.error(traceback.format_exc())  
-            return  
-
-        logging.info(f"Открытие исходной таблицы (ID: {SOURCE_SPREADSHEET_ID})...")
-        source_spreadsheet = gspread_client.open_by_key(SOURCE_SPREADSHEET_ID)
-        logging.info(f"Открытие целевой таблицы (ID: {TARGET_SPREADSHEET_ID})...")
-        target_spreadsheet = gspread_client.open_by_key(TARGET_SPREADSHEET_ID)
-
-        logging.info("Получение списка листов из исходной таблицы...")
-        source_worksheets = source_spreadsheet.worksheets()
-        logging.info(f"Найдено {len(source_worksheets)} листов в исходной таблице.")
-
-        if not source_worksheets:
-            logging.warning("Исходная таблица не содержит листов. Нечего синхронизировать.")
-            return
-
-        for i, source_sheet in enumerate(source_worksheets):
-            try:
-                synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sheet, target_spreadsheet)
+                self._wait_if_needed()
+                return request.execute()
             except Exception as e:
-                logging.error(
-                    f"Произошла НЕОБРАБОТАННАЯ ошибка при синхронизации листа '{source_sheet.title}'. Продолжаем с следующим листом (если есть). Error: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
+                logger.warning(f"Сетевая ошибка, попытка {attempt + 1}/{CONFIG['MAX_RETRIES']}: {e}")
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    raise
+                time.sleep(2 ** attempt)
 
-            if i < len(source_worksheets) - 1:
-                time.sleep(2)  
+    def get_sheet_data(self, spreadsheet_id, sheet_name):
+        for attempt in range(CONFIG["MAX_RETRIES"]):
+            try:
+                self._wait_if_needed()
+                # Запрашиваем данные, чтобы получить форматированные значения, как они отображаются в таблице
+                result = self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=sheet_name,
+                    valueRenderOption='FORMATTED_VALUE'  # Изменено на FORMATTED_VALUE
+                ).execute()
 
-        logging.info("\n--- ЗАПУСК ОБРАБОТКИ ЦЕН/СКИДОК ---")
-        apply_price_discount(sheets_service, source_spreadsheet, target_spreadsheet,
-                             sheet_name='Export Products Sheet')
-        logging.info("--- ОБРАБОТКА ЦЕН/СКИДОК ЗАВЕРШЕНА ---\n")
+                values = result.get('values', [])
 
-        logging.info("\n--- ЗАПУСК ПРОВЕРКИ МИНИМАЛЬНОГО КОЛИЧЕСТВА ПУСТЫХ СТРОК ---")
-        for sheet_name in SHEETS_TO_ENSURE_EMPTY_ROWS:
-            ensure_minimum_empty_rows(gspread_client, target_spreadsheet, sheet_name, MIN_EMPTY_ROWS)
-        logging.info("--- ПРОВЕРКА МИНИМАЛЬНОГО КОЛИЧЕСТВА ПУСТЫХ СТРОК ЗАВЕРШЕНА ---\n")
+                if not values:
+                    logger.warning(f"Лист {sheet_name} пуст или не найден в spreadsheets.values().get()")
+                    return pd.DataFrame()
 
-    except gspread.exceptions.APIError as e:
-        logging.error(f"Глобальная ошибка Google Sheets API (gspread): {e.response.text}")
-        logging.error("Проверьте права доступа сервисного аккаунта к таблицам.")
+                raw_headers = values[0]  # Исходные заголовки из первой строки листа
+                data = values[1:]
+
+                # --- ДИАГНОСТИЧЕСКИЙ ЛОГ ВНУТРИ get_sheet_data ---
+                logger.info(
+                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Количество исходных заголовков (len(raw_headers)): {len(raw_headers)}")
+                logger.info(
+                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Первые 50 исходных заголовков: {raw_headers[:50]}")  # Логируем часть, чтобы не переполнять
+                if len(raw_headers) > 50:
+                    logger.info(
+                        f"GET_SHEET_DATA DEBUG ({sheet_name}): Последние 50 исходных заголовков: {raw_headers[-50:]}")
+
+                # Подсчитаем дубликаты в raw_headers для диагностики
+                from collections import Counter
+                header_counts = Counter(raw_headers)
+                duplicate_headers_in_raw = {header: count for header, count in header_counts.items() if count > 1}
+                if duplicate_headers_in_raw:
+                    logger.info(
+                        f"GET_SHEET_DATA DEBUG ({sheet_name}): Найдены дублирующиеся заголовки в raw_headers: {duplicate_headers_in_raw}")
+                else:
+                    logger.info(
+                        f"GET_SHEET_DATA DEBUG ({sheet_name}): Дублирующихся заголовков в raw_headers НЕ найдено.")
+                # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
+
+                # Создаем уникальные заголовки для pandas, если они действительно дублируются в raw_headers
+                # Это стандартное поведение pandas, но мы сделаем это явно для контроля
+                processed_headers = []
+                counts = {}
+                for header_val in raw_headers:
+                    if header_val is None: header_val = ''  # Заменяем None на пустую строку, если есть
+                    str_header_val = str(header_val)  # Убедимся, что это строка
+                    if str_header_val in counts:
+                        counts[str_header_val] += 1
+                        processed_headers.append(f"{str_header_val}.{counts[str_header_val] - 1}")
+                    else:
+                        counts[str_header_val] = 1
+                        processed_headers.append(str_header_val)
+
+                # --- ДИАГНОСТИЧЕСКИЙ ЛОГ ПОСЛЕ ОБРАБОТКИ ЗАГОЛОВКОВ ---
+                logger.info(
+                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Количество обработанных заголовков (len(processed_headers)): {len(processed_headers)}")
+                logger.info(
+                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Первые 50 обработанных заголовков: {processed_headers[:50]}")
+                if len(processed_headers) > 50:
+                    logger.info(
+                        f"GET_SHEET_DATA DEBUG ({sheet_name}): Последние 50 обработанных заголовков: {processed_headers[-50:]}")
+                # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
+
+                normalized_data = []
+                for row_index, row_values in enumerate(data):
+                    # Важно: теперь нормализуем по длине processed_headers
+                    current_row_normalized = list(row_values)  # Копируем, чтобы не изменять исходный список
+                    if len(current_row_normalized) < len(processed_headers):
+                        current_row_normalized.extend([''] * (len(processed_headers) - len(current_row_normalized)))
+                    elif len(current_row_normalized) > len(processed_headers):
+                        current_row_normalized = current_row_normalized[:len(processed_headers)]
+                    normalized_data.append(current_row_normalized)
+
+                if not normalized_data and not processed_headers:  # Если нет ни данных, ни заголовков
+                    return pd.DataFrame()
+                if not processed_headers and normalized_data:  # Если есть данные, но нет заголовков (маловероятно после values[0])
+                    logger.warning(
+                        f"GET_SHEET_DATA WARNING ({sheet_name}): Есть данные, но не удалось определить заголовки.")
+                    return pd.DataFrame(normalized_data)  # Pandas сам сгенерирует числовые заголовки
+
+                df = pd.DataFrame(normalized_data, columns=processed_headers)
+                logger.info(
+                    f"GET_SHEET_DATA INFO ({sheet_name}): DataFrame создан. Количество столбцов в DataFrame: {len(df.columns)}")
+                logger.info(
+                    f"GET_SHEET_DATA INFO ({sheet_name}): Столбцы DataFrame: {df.columns.tolist()[:50]}")  # Логируем часть столбцов DataFrame
+                if len(df.columns) > 50:
+                    logger.info(
+                        f"GET_SHEET_DATA INFO ({sheet_name}): Последние 50 столбцов DataFrame: {df.columns.tolist()[-50:]}")
+
+                return df
+
+            except Exception as e:
+                logger.warning(f"GET_SHEET_DATA ({sheet_name}): Попытка {attempt + 1} не удалась: {e}")
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    logger.error(f"GET_SHEET_DATA ({sheet_name}): Не удалось прочитать лист: {e}")
+                    return pd.DataFrame()
+                time.sleep(2 ** attempt)
+
+        return pd.DataFrame()
+
+    def write_sheet_data(self, spreadsheet_id, sheet_name, df):
+        try:
+            if df.empty:
+                logger.info(f"Пустой DataFrame, нет данных для записи в {sheet_name}")
+                return True, None
+
+            required_rows = len(df) + 1
+            self._ensure_sheet_capacity(spreadsheet_id, sheet_name, required_rows)
+
+            self._wait_if_needed()
+            existing_data = self._execute_with_retry(
+                self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=sheet_name
+                )
+            )
+
+            existing_values = existing_data.get('values', [])
+
+            if not existing_values:
+                logger.info(f"Таблица {sheet_name} пустая, записываем новые данные")
+                for i in range(0, len(df), CONFIG["BATCH_SIZE"]):
+                    batch = df.iloc[i:i + CONFIG["BATCH_SIZE"]]
+                    self._write_batch(spreadsheet_id, sheet_name, batch, i == 0)
+                return True, None
+
+            headers = existing_values[0] if existing_values else []
+
+            # Обновленная логика определения ключевого столбца для групп
+            if "Export Groups Sheet" in sheet_name:
+                id_column = "Ідентифікатор_групи" if "Ідентифікатор_групи" in df.columns else \
+                    "Номер_групи" if "Номер_групи" in df.columns else \
+                        df.columns[0]
+
+                # Для групп проверяем также по названию группы
+                name_column = "Назва_групи" if "Назва_групи" in df.columns else None
+            else:
+                id_column = "Ідентифікатор_товару" if "Ідентифікатор_товару" in df.columns else \
+                    "Код_товару" if "Код_товару" in df.columns else df.columns[0]
+
+            existing_data_dict = {}
+            for i in range(1, len(existing_values)):
+                row = existing_values[i]
+                if len(row) > 0:
+                    # Для групп используем комбинацию идентификатора и названия, если доступно
+                    if "Export Groups Sheet" in sheet_name and name_column:
+                        id_idx = headers.index(id_column) if id_column in headers else 0
+                        name_idx = headers.index(name_column) if name_column in headers else -1
+
+                        if id_idx < len(row) and name_idx < len(row):
+                            row_key = (row[id_idx], row[name_idx])
+                        elif id_idx < len(row):
+                            row_key = row[id_idx]
+                        else:
+                            continue
+                    else:
+                        id_idx = headers.index(id_column) if id_column in headers else 0
+                        if id_idx < len(row):
+                            row_key = row[id_idx]
+                        else:
+                            continue
+
+                    existing_data_dict[row_key] = {
+                        'row_idx': i + 1,
+                        'data': row
+                    }
+
+            # Определяем критические поля в зависимости от типа листа
+            if "Export Groups Sheet" in sheet_name:
+                critical_fields = ["Назва_групи", "Назва_групи_укр", "Ідентифікатор_групи"]
+            else:
+                critical_fields = ["Назва_позиції", "Назва_позиції_укр", "Опис", "Опис_укр", "Наявність", "Ціна",
+                                   "Кількість", "Знижка"]
+
+            critical_indices = [headers.index(field) for field in critical_fields if field in headers]
+
+            # Для групп используем уникальность по идентификатору и названию
+            if "Export Groups Sheet" in sheet_name and name_column:
+                df_unique = df.drop_duplicates(subset=[id_column, name_column], keep='last')
+            else:
+                df_unique = df.drop_duplicates(subset=[id_column], keep='last')
+
+            new_rows = pd.DataFrame(columns=df.columns)
+            updates = []
+            deleted_rows = set(existing_data_dict.keys())
+
+            for idx, row in df_unique.iterrows():
+                row_id = str(row[id_column])
+                # Для групп создаем ключ для сравнения
+                if "Export Groups Sheet" in sheet_name and name_column:
+                    row_name = str(row[name_column]) if name_column in row and pd.notna(row[name_column]) else ""
+                    row_key = (row_id, row_name)
+                else:
+                    row_key = row_id
+
+                if row_key in existing_data_dict:
+                    existing_row = existing_data_dict[row_key]['data']
+                    row_idx = existing_data_dict[row_key]['row_idx']
+
+                    deleted_rows.discard(row_key)
+
+                    update_needed = False
+                    update_values = existing_row.copy()
+
+                    for col_idx in critical_indices:
+                        if col_idx < len(headers):
+                            df_col = headers[col_idx]
+                            if df_col in row:
+                                new_value = str(row[df_col]) if pd.notna(row[df_col]) else ''
+                                old_value = str(existing_row[col_idx]) if col_idx < len(existing_row) else ''
+
+                                if new_value != old_value:
+                                    update_needed = True
+                                    if col_idx < len(update_values):
+                                        update_values[col_idx] = new_value
+                                    else:
+                                        update_values.extend([''] * (col_idx - len(update_values) + 1))
+                                        update_values[col_idx] = new_value
+
+                    if update_needed:
+                        updates.append((row_idx, update_values))
+                else:
+                    new_rows = pd.concat([new_rows, pd.DataFrame([row])], ignore_index=True)
+
+            # Остальная часть функции остается без изменений
+            for row_idx, row_data in updates:
+                range_name = f"{sheet_name}!A{row_idx}"
+
+                self._execute_with_retry(
+                    self.service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        body={'values': [row_data]}
+                    )
+                )
+
+            if not new_rows.empty:
+                start_row = len(existing_values) + 1
+                range_name = f"{sheet_name}!A{start_row}"
+
+                for i in range(0, len(new_rows), CONFIG["BATCH_SIZE"]):
+                    batch = new_rows.iloc[i:i + CONFIG["BATCH_SIZE"]]
+                    values = batch.fillna('').values.tolist()
+
+                    self._execute_with_retry(
+                        self.service.spreadsheets().values().update(
+                            spreadsheetId=spreadsheet_id,
+                            range=range_name,
+                            valueInputOption='RAW',
+                            body={'values': values}
+                        )
+                    )
+
+                    start_row += len(values)
+                    range_name = f"{sheet_name}!A{start_row}"
+
+            if deleted_rows:
+                rows_to_delete = sorted([existing_data_dict[row_id]['row_idx'] for row_id in deleted_rows],
+                                        reverse=True)
+
+                logger.info(f"Удаление товаров/групп, отсутствующих у поставщика: {len(deleted_rows)} позиций")
+                for row_id in deleted_rows:
+                    logger.info(f"Позиция с ключом {row_id} отсутствует у поставщика и будет удалена")
+
+                # Собираем все запросы на удаление в один список и отправляем одним batchUpdate.
+                # Строки отсортированы по убыванию — Google Sheets корректно пересчитывает индексы.
+                sheet_id = self._get_sheet_id(sheet_name)
+                delete_requests = [
+                    {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': sheet_id,
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,
+                                'endIndex': row_idx
+                            }
+                        }
+                    }
+                    for row_idx in rows_to_delete
+                ]
+
+                self._execute_with_retry(
+                    self.service.spreadsheets().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body={'requests': delete_requests}
+                    )
+                )
+
+                logger.info(f"Удалено {len(rows_to_delete)} строк одним запросом (позиции отсутствуют у поставщика)")
+
+            sheet_type = "products" if "Export Products Sheet" in sheet_name else "groups"
+            self._remove_duplicates(spreadsheet_id, sheet_name, sheet_type)
+
+            logger.info(
+                f"Данные успешно обновлены в {sheet_name}: {len(updates)} обновлено, {len(new_rows)} добавлено, {len(deleted_rows)} удалено")
+            return True, None
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Ошибка записи в {sheet_name}: {error_msg}")
+            return False, error_msg
+
+    def _get_sheet_id(self, sheet_name):
+        try:
+            if sheet_name in self._sheet_id_cache:
+                return self._sheet_id_cache[sheet_name]
+
+            self._wait_if_needed()
+            sheets_metadata = self.service.spreadsheets().get(
+                spreadsheetId=CONFIG["OUTPUT_SPREADSHEET_ID"]
+            ).execute()
+
+            for sheet in sheets_metadata.get('sheets', []):
+                title = sheet['properties']['title']
+                self._sheet_id_cache[title] = sheet['properties']['sheetId']
+
+            if sheet_name in self._sheet_id_cache:
+                return self._sheet_id_cache[sheet_name]
+
+            logger.error(f"Лист {sheet_name} не найден")
+            raise ValueError(f"Лист {sheet_name} не найден")
+
+        except Exception as e:
+            logger.error(f"Ошибка получения ID листа: {e}")
+            raise
+
+    def _column_index_to_letter(self, index):
+        result = ""
+        while index > 0:
+            index, remainder = divmod(index - 1, 26)
+            result = chr(65 + remainder) + result
+        return result if result else "A"
+
+    def _remove_duplicates(self, spreadsheet_id, sheet_name, sheet_type):
+        try:
+            self._wait_if_needed()
+            result = self.service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_name
+            ).execute()
+
+            values = result.get('values', [])
+            if not values or len(values) <= 1:
+                logger.info(f"Нет данных для удаления дубликатов в {sheet_name}")
+                return
+
+            headers = values[0]
+
+            if sheet_type == "products":
+                id_col = "Ідентифікатор_товару" if "Ідентифікатор_товару" in headers else "Код_товару"
+                if id_col not in headers:
+                    logger.warning(f"Столбец {id_col} не найден в заголовках")
+                    return
+
+                id_idx = headers.index(id_col)
+                critical_fields = {
+                    "Наявність": headers.index("Наявність") if "Наявність" in headers else None,
+                    "Ціна": headers.index("Ціна") if "Ціна" in headers else None,
+                    "Кількість": headers.index("Кількість") if "Кількість" in headers else None,
+                    "Знижка": headers.index("Знижка") if "Знижка" in headers else None
+                }
+
+                seen_ids = {}
+                rows_to_delete = []
+                rows_to_update = {}
+
+                for i in range(1, len(values)):
+                    row = values[i]
+                    if len(row) > id_idx:
+                        current_id = row[id_idx].strip()
+                        if current_id in seen_ids:
+                            original_idx = seen_ids[current_id]
+                            original_row = values[original_idx]
+
+                            update_needed = False
+                            if original_idx not in rows_to_update:
+                                rows_to_update[original_idx] = original_row.copy()
+
+                            for field, idx in critical_fields.items():
+                                if idx is not None and idx < len(row):
+                                    if idx < len(row) and row[idx].strip():
+                                        if idx >= len(rows_to_update[original_idx]):
+                                            rows_to_update[original_idx].extend(
+                                                [''] * (idx - len(rows_to_update[original_idx]) + 1))
+                                        rows_to_update[original_idx][idx] = row[idx]
+                                        update_needed = True
+
+                            rows_to_delete.append(i + 1)
+                        else:
+                            seen_ids[current_id] = i
+
+                for idx, updated_row in rows_to_update.items():
+                    range_name = f"{sheet_name}!A{idx + 1}"
+
+                    self._wait_if_needed()
+                    self.service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        body={'values': [updated_row]}
+                    ).execute()
+
+                    logger.info(
+                        f"Обновлена оригинальная строка {idx + 1} с данными из дубликатов: {updated_row[id_idx]}")
+
+                for row_idx in sorted(rows_to_delete, reverse=True):
+                    request = {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': self._get_sheet_id(sheet_name),
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,
+                                'endIndex': row_idx
+                            }
+                        }
+                    }
+
+                    self._wait_if_needed()
+                    self.service.spreadsheets().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body={'requests': [request]}
+                    ).execute()
+
+                if rows_to_delete:
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
+
+            else:
+                group_num_col = "Ідентифікатор_групи"
+                group_name_col = "Назва_групи"
+
+                if group_num_col not in headers or group_name_col not in headers:
+                    logger.warning("Не найдены необходимые столбцы для групп")
+                    return
+
+                num_idx = headers.index(group_num_col)
+                name_idx = headers.index(group_name_col)
+
+                seen_groups = {}
+                rows_to_delete = []
+
+                for i in range(1, len(values)):
+                    row = values[i]
+                    if len(row) > max(num_idx, name_idx):
+                        group_key = (row[num_idx].strip(), row[name_idx].strip())
+                        if group_key in seen_groups:
+                            rows_to_delete.append(i + 1)
+                        else:
+                            seen_groups[group_key] = i
+
+                for row_idx in sorted(rows_to_delete, reverse=True):
+                    request = {
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': self._get_sheet_id(sheet_name),
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,
+                                'endIndex': row_idx
+                            }
+                        }
+                    }
+
+                    self._wait_if_needed()
+                    self.service.spreadsheets().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body={'requests': [request]}
+                    ).execute()
+
+                if rows_to_delete:
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name}")
+
+        except Exception as e:
+            logger.error(f"Ошибка при удалении дубликатов в {sheet_name}: {e}")
+
+    def _clear_sheet(self, spreadsheet_id, sheet_name):
+        self._wait_if_needed()
+        self.service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=sheet_name,
+            body={}
+        ).execute()
+
+    def _write_batch(self, spreadsheet_id, sheet_name, batch_df, is_first_batch):
+        cleaned_df = batch_df.copy()
+
+        for col in cleaned_df.columns:
+            if cleaned_df[col].dtype == 'object':
+                cleaned_df[col] = cleaned_df[col].apply(
+                    lambda x: '' if pd.isna(x) else str(x) if isinstance(x, (pd.Series, list, dict)) else x)
+
+        if is_first_batch:
+            values = [cleaned_df.columns.tolist()]
+        else:
+            values = []
+
+        for _, row in cleaned_df.iterrows():
+            row_list = []
+            for col in cleaned_df.columns:
+                value = row[col]
+                if pd.isna(value):
+                    row_list.append('')
+                elif isinstance(value, (pd.Series, list, dict)):
+                    row_list.append(str(value))
+                else:
+                    row_list.append(value)
+            values.append(row_list)
+
+        if is_first_batch:
+            range_name = f"{sheet_name}!A1"
+        else:
+            start_row = self._get_next_empty_row(spreadsheet_id, sheet_name)
+            range_name = f"{sheet_name}!A{start_row}"
+
+        body = {'values': values}
+
+        for attempt in range(CONFIG["MAX_RETRIES"]):
+            try:
+                self._wait_if_needed()
+                logger.info(f"Записываем пакет данных в {sheet_name} по диапазону {range_name}: {len(values)} строк")
+
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=range_name,
+                    valueInputOption='RAW',
+                    body=body
+                ).execute()
+                return
+            except Exception as e:
+                logger.warning(f"Попытка {attempt + 1} записи не удалась: {str(e)}")
+                if attempt == CONFIG["MAX_RETRIES"] - 1:
+                    logger.error(f"Все попытки записи не удались. Последняя ошибка: {str(e)}")
+                    raise Exception(f"Ошибка API при записи данных: {str(e)}")
+                time.sleep(2 ** attempt)
+
+    def _get_next_empty_row(self, spreadsheet_id, sheet_name):
+        self._wait_if_needed()
+        result = self.service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!A:A"
+        ).execute()
+
+        # values включает заголовок, если он есть
+        values = result.get('values', [])
+
+        # Находим последнюю строку, которая содержит данные, чтобы определить следующую пустую строку.
+        # Если values = ['Header'], len(values) = 1. Следующая пустая строка = 2.
+        # Если values = [], len(values) = 0. Следующая пустая строка = 1.
+
+        # Но поскольку write_sheet_data использует существующие данные для определения того,
+        # что записывать (заголовок или данные), _get_next_empty_row нужен только для _write_batch,
+        # который вызывается только для последующих пакетов.
+        # В контексте write_sheet_data, если existing_values не пуст, len(existing_values) - это количество занятых строк,
+        # и следующая строка - len(existing_values) + 1.
+
+        # Здесь мы просто возвращаем следующую строку после последней, которая была получена.
+        # Если values содержит только заголовок, len(values) = 1, возвращаем 2.
+        return len(values) + 1
+
+    def _ensure_sheet_capacity(self, spreadsheet_id, sheet_name, required_rows):
+        try:
+            self._wait_if_needed()
+            sheets_info = self.service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields='sheets.properties'
+            ).execute()
+
+            target_sheet = None
+            for sheet in sheets_info.get('sheets', []):
+                if sheet['properties']['title'] == sheet_name:
+                    target_sheet = sheet
+                    break
+
+            if target_sheet:
+                current_rows = target_sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
+                logger.info(f"Лист {sheet_name} имеет {current_rows} строк, требуется {required_rows}")
+
+                if current_rows < required_rows:
+                    new_row_count = max(required_rows + 1000, int(required_rows * 1.0))
+                    logger.info(f"Расширяем лист {sheet_name} до {new_row_count} строк")
+
+                    request = {
+                        'updateSheetProperties': {
+                            'properties': {
+                                'sheetId': target_sheet['properties']['sheetId'],
+                                'gridProperties': {
+                                    'rowCount': new_row_count
+                                }
+                            },
+                            'fields': 'gridProperties.rowCount'
+                        }
+                    }
+
+                    self._wait_if_needed()
+                    self.service.spreadsheets().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body={'requests': [request]}
+                    ).execute()
+
+                    logger.info(f"Лист {sheet_name} успешно расширен до {new_row_count} строк")
+                    return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка при расширении листа {sheet_name}: {e}")
+            return False
+
+    # --- Новый метод для выполнения требования ---
+    def _ensure_min_empty_rows(self, sheet_name, min_empty_rows=1000):
+        try:
+            # 1. Определяем последнюю строку с данными (включая заголовок)
+            self._wait_if_needed()
+            result = self.service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{sheet_name}!A:A"
+            ).execute()
+
+            # values включает все строки до последней заполненной, включая заголовок.
+            values = result.get('values', [])
+            last_used_row_index = len(values)
+
+            # 2. Получаем общее количество строк на листе
+            self._wait_if_needed()
+            sheets_info = self.service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id,
+                fields='sheets.properties'
+            ).execute()
+
+            target_sheet = None
+            for sheet in sheets_info.get('sheets', []):
+                if sheet['properties']['title'] == sheet_name:
+                    target_sheet = sheet
+                    break
+
+            if not target_sheet:
+                logger.error(f"Лист {sheet_name} не найден для проверки пустых строк.")
+                return
+
+            current_total_rows = target_sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
+
+            # 3. Рассчитываем количество пустых строк
+            empty_rows = current_total_rows - last_used_row_index
+
+            logger.info(
+                f"Лист '{sheet_name}': Всего строк: {current_total_rows}, Занятых строк: {last_used_row_index}, Пустых строк: {empty_rows}")
+
+            # 4. Проверяем и добавляем, если нужно
+            if empty_rows < min_empty_rows:
+                # Количество строк для добавления
+                rows_to_add = min_empty_rows - empty_rows
+                new_row_count = current_total_rows + rows_to_add
+
+                logger.info(
+                    f"Лист '{sheet_name}': Недостаточно пустых строк ({empty_rows} < {min_empty_rows}). Добавляем {rows_to_add} строк для достижения {new_row_count} строк.")
+
+                request = {
+                    'updateSheetProperties': {
+                        'properties': {
+                            'sheetId': self._get_sheet_id(sheet_name),
+                            'gridProperties': {
+                                'rowCount': new_row_count
+                            }
+                        },
+                        'fields': 'gridProperties.rowCount'
+                    }
+                }
+
+                self._wait_if_needed()
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={'requests': [request]}
+                ).execute()
+
+                logger.info(f"Лист '{sheet_name}' успешно расширен до {new_row_count} строк.")
+            else:
+                logger.info(
+                    f"Лист '{sheet_name}': Количество пустых строк ({empty_rows}) соответствует или превышает минимум ({min_empty_rows}). Изменений не требуется.")
+
+        except Exception as e:
+            logger.error(f"Ошибка при проверке/добавлении пустых строк в {sheet_name}: {e}")
+
+    # --- Конец нового метода ---
+
+
+def load_mapping():
+    try:
+        with open(CONFIG["MAPPING_FILE"], 'r', encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
-        logging.error(f"Произошла непредвиденная ошибка в основном процессе: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-    finally:
-        logging.info("--- Скрипт синхронизации Google Таблиц (структура и данные на месте) завершен ---")
+        logger.error(f"Ошибка загрузки маппинга: {e}")
+        raise
 
 
-# --- ЗАПУСК СКРИПТА ---
-if __name__ == '__main__':
-    synchronize_all_sheets()
+def get_template_columns():
+    products_columns = [
+        "Код_товару", "Назва_позиції", "Назва_позиції_укр", "Пошукові_запити", "Пошукові_запити_укр",
+        "Опис", "Опис_укр", "Тип_товару", "Ціна", "Валюта", "Одиниця_виміру", "Мінімальний_обсяг_замовлення",
+        "Оптова_ціна", "Мінімальне_замовлення_опт", "Посилання_зображення", "Наявність", "Кількість",
+        "Номер_групи", "Назва_групи", "Посилання_підрозділу", "Можливість_поставки", "Термін_поставки",
+        "Спосіб_пакування", "Спосіб_пакування_укр", "Унікальний_ідентифікатор", "Ідентифікатор_товару",
+        "Ідентифікатор_підрозділу", "Ідентифікатор_групи", "Виробник", "Країна_виробник", "Знижка",
+        "ID_групи_різновидів", "Особисті_нотатки", "Продукт_на_сайті", "Термін_дії_знижки_від",
+        "Термін_дії_знижки_до", "Ціна_від", "Ярлик", "HTML_заголовок", "HTML_заголовок_укр",
+        "HTML_опис", "HTML_опис_укр", "Код_маркування_(GTIN)", "Номер_пристрою_(MPN)",
+        "Вага,кг", "Ширина,см", "Висота,см", "Довжина,см", "Де_знаходиться_товар",
+        "Товар_на_видалення", "Причина_видалення_товару"
+    ]
+
+    for i in range(1, 25):
+        products_columns.extend([
+            f"Назва_Характеристики_{i}" if i > 1 else "Назва_Характеристики",
+            f"Одиниця_виміру_Характеристики_{i}" if i > 1 else "Одиниця_виміру_Характеристики",
+            f"Значення_Характеристики_{i}" if i > 1 else "Значення_Характеристики"
+        ])
+
+    groups_columns = [
+        "Номер_групи", "Назва_групи", "Назва_групи_укр", "Ідентифікатор_групи",
+        "Номер_батьківської_групи", "Ідентифікатор_батьківської_групи", "HTML_заголовок_групи",
+        "HTML_заголовок_групи_укр", "HTML_опис_групи", "HTML_опис_групи_укр",
+        "Опис_групи_до_списку_товарних_позицій", "Опис_групи_до_списку_товарних_позицій_укр",
+        "Опис_групи_після_списку_товарних_позицій", "Опис_групи_після_списку_товарних_позицій_укр",
+        "Посилання_зображення_групи"
+    ]
+
+    return products_columns, groups_columns
+
+
+def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
+    logger.info(f"Преобразование данных {supplier_name} для {sheet_type}")
+
+    products_cols, groups_cols = get_template_columns()
+    template_cols = products_cols if sheet_type == "products" else groups_cols
+
+    mapping_key = "products_mapping" if sheet_type == "products" else "groups_mapping"
+    supplier_mapping = mapping.get(mapping_key, {}).get(supplier_name, {})
+
+    if not supplier_mapping:
+        logger.warning(f"Нет маппинга для {supplier_name} ({sheet_type})")
+        return pd.DataFrame(columns=template_cols)
+
+    data_dict = {col: [] for col in template_cols}
+
+    for _, row in supplier_df.iterrows():
+        row_dict = row.to_dict() if isinstance(row, pd.Series) else row
+        row_data = {col: '' for col in template_cols}
+
+        # Специальная обработка для IZIDROP если это группы
+        if supplier_name == "IZIDROP" and sheet_type == "groups":
+            if 'parentId' in row_dict:
+                row_dict['parentId'] = '' if pd.isna(row_dict['parentId']) else row_dict['parentId']
+
+        # Добавляем обработку новых полей для каждого поставщика
+        if supplier_name == "AGER":
+            row_data['Ідентифікатор_товару'] = row_dict.get('id', '')
+            row_data['Код_товару'] = row_dict.get('vendorCode', '')
+        elif supplier_name == "IZIDROP":
+            row_data['Ідентифікатор_товару'] = row_dict.get('id', '')
+            row_data['Код_товару'] = row_dict.get('barcode', '')
+        elif supplier_name in ["MOYDROP", "SPECULANT", "KIRS", "BAGSROOM"]:
+            row_data['Ідентифікатор_товару'] = row_dict.get('id', '')
+            row_data['Код_товару'] = row_dict.get('vendorCode', '')
+        # Для FOOTBALLERS идентификаторы должны мапиться через основной цикл, так как они есть в column_mapping.json
+
+        # Основной цикл маппинга на основе column_mapping.json
+        for supplier_col, target_col in supplier_mapping.items():
+            if supplier_col not in row_dict:
+                continue
+
+            value = row_dict[supplier_col]
+            if pd.isna(value) or value == '':
+                continue
+
+            if isinstance(target_col, list) and supplier_col.startswith("param_"):
+                # Логика для param_ характеристик (используется AGER, SPECULANT, KIRS, etc.)
+                char_name = target_col[
+                    2]  # Например, "Бренд" из ["Назва_Характеристики", "Значення_Характеристики", "Бренд"]
+
+                # Ищем первый свободный слот для характеристик в row_data
+                for idx in range(1, 25):  # Проверяем слоты от _1 до _24
+                    name_col_target = f"Назва_Характеристики_{idx}" if idx > 1 else "Назва_Характеристики"
+                    value_col_target = f"Значення_Характеристики_{idx}" if idx > 1 else "Значення_Характеристики"
+                    # Единицы измерения для param_ характеристик не задаются явным образом через эту структуру в вашем маппинге,
+                    # но можно добавить, если необходимо, или они должны быть частью `value`
+
+                    if not row_data[name_col_target]:  # Если слот для имени характеристики пуст
+                        row_data[name_col_target] = char_name
+                        str_value = str(value)
+                        if str_value.startswith("'") and not str_value.startswith("''"):
+                            str_value = str_value[1:]
+                        row_data[value_col_target] = str_value
+                        break  # Характеристика размещена, переходим к следующему param_ из маппинга
+            else:  # Прямое сопоставление
+                if target_col in row_data:
+                    str_value = str(value)
+                    if str_value.startswith("'") and not str_value.startswith("''"):
+                        str_value = str_value[1:]
+                    row_data[target_col] = str_value
+
+        # Специальная обработка для повторяющихся характеристик "FOOTBALLERS"
+        if supplier_name == "FOOTBALLERS" and sheet_type == "products":
+            # Первый набор характеристик (например, "Назва_Характеристики" без суффикса)
+            # уже обработан основным циклом маппинга, так как он есть в column_mapping.json
+            # и будет помещен в целевые поля "Назва_Характеристики", "Значення_Характеристики" и т.д. (слот _1).
+
+            # Теперь ищем характеристики с суффиксами ".1", ".2" и т.д. в исходных данных (row_dict)
+            # и размещаем их в целевые слоты _2, _3 и т.д. (в row_data).
+            current_char_slot_index = 2  # Начинаем заполнять со второго слота характеристик в целевой таблице
+
+            for i in range(1, 24):  # Проверяем исходные характеристики с суффиксом от ".1" до ".23"
+                # Это позволит заполнить целевые слоты от _2 до _24
+
+                # Формируем имена столбцов в исходных данных (как их переименовывает pandas при чтении дубликатов)
+                source_name_key = f"Назва_Характеристики.{i}"
+                source_unit_key = f"Одиниця_виміру_Характеристики.{i}"
+                source_value_key = f"Значення_Характеристики.{i}"
+
+                # Формируем имена целевых столбцов в row_data
+                target_name_col = f"Назва_Характеристики_{current_char_slot_index}"
+                target_unit_col = f"Одиниця_виміру_Характеристики_{current_char_slot_index}"
+                target_value_col = f"Значення_Характеристики_{current_char_slot_index}"
+
+                # Проверяем, существует ли столбец с названием характеристики в исходных данных (row_dict) и не пустой ли он
+                if source_name_key in row_dict and pd.notna(row_dict[source_name_key]) and str(
+                        row_dict[source_name_key]).strip() != '':
+                    # Убедимся, что не выходим за пределы 24 слотов для характеристик в целевой таблице
+                    if current_char_slot_index <= 24:
+                        row_data[target_name_col] = str(row_dict[source_name_key])
+
+                        if source_value_key in row_dict and pd.notna(row_dict[source_value_key]):
+                            row_data[target_value_col] = str(row_dict[source_value_key])
+                        else:
+                            row_data[target_value_col] = ''  # Явно устанавливаем пустое значение, если нет данных
+
+                        if source_unit_key in row_dict and pd.notna(row_dict[source_unit_key]):
+                            row_data[target_unit_col] = str(row_dict[source_unit_key])
+                        else:
+                            row_data[target_unit_col] = ''  # Явно устанавливаем пустое значение, если нет данных
+
+                        current_char_slot_index += 1  # Переходим к следующему слоту в целевой таблице
+                    else:
+                        # Достигнут лимит слотов характеристик в целевой таблице
+                        logger.warning(
+                            f"Достигнут лимит в 24 характеристики для товара {row_dict.get('Код_товару', '')} от FOOTBALLERS. Последующие характеристики не будут добавлены.")
+                        break
+                else:
+                    # Если очередной столбец Назва_Характеристики.i не найден или пуст,
+                    # предполагаем, что больше характеристик для данного товара у поставщика нет.
+                    break
+
+        # Установка значений по умолчанию и других полей для продуктов
+        if sheet_type == "products":
+            if not row_data['Валюта']:
+                row_data['Валюта'] = 'UAH'
+            if not row_data['Одиниця_виміру']:
+                row_data['Одиниця_виміру'] = 'шт.'
+
+            # Обработка поля "Наявність" из исходных данных, если оно есть в row_dict (уже обработано основным циклом, если есть в маппинге)
+            # Если поле "available" есть в row_dict, но не в маппинге, и нужно его учесть:
+            if 'available' in row_dict and not row_data['Наявність']:  # Если 'Наявність' еще не заполнено
+                available_value = str(row_dict['available']).lower().strip()
+                if available_value in ['true', '+', '1', 'yes', 'да', 'в наличии', 'є в наявності']:
+                    row_data['Наявність'] = '+'
+                elif available_value in ['false', '-', '0', 'no', 'нет', 'немає в наявності']:
+                    row_data['Наявність'] = '-'
+                # Если другие значения, оставляем пустым или как есть, если уже заполнено
+
+            # Обновление поля "Наявність" на основе поля "Кількість" если "Наявність" все еще не определено
+            if not row_data['Наявність'] and 'Кількість' in row_data and row_data['Кількість'] != '':
+                try:
+                    quantity = int(
+                        float(str(row_data['Кількість']).replace(',', '.')))  # Преобразуем количество в число
+                    if quantity > 0:
+                        row_data['Наявність'] = '+'
+                    else:
+                        row_data['Наявність'] = '-'
+                except ValueError:
+                    logger.warning(
+                        f"Не удалось преобразовать Кількість '{row_data['Кількість']}' в число для товара {row_data.get('Код_товару', '')}")
+
+            row_data['Особисті_нотатки'] = supplier_name
+
+        for col in template_cols:
+            data_dict[col].append(row_data.get(col, ''))
+
+    result_df = pd.DataFrame(data_dict, columns=template_cols)
+
+    if sheet_type == "groups":
+        result_df['Джерело_даних'] = supplier_name
+
+    logger.info(f"Данные {supplier_name} ({sheet_type}) успешно преобразованы, получено строк: {len(result_df)}")
+    return result_df
+
+
+def process_supplier(gsheets, spreadsheet_id, supplier_name, mapping):
+    logger.info(f"Обработка поставщика {supplier_name}")
+
+    try:
+        gsheets._wait_if_needed()
+        spreadsheet = gsheets.service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets.properties'
+        ).execute()
+
+        sheet_names = [sheet['properties']['title'] for sheet in spreadsheet['sheets']]
+        logger.info(f"Найденные листы для {supplier_name}: {sheet_names}")
+
+        products_df = None
+        groups_df = None
+
+        for sheet_name in sheet_names:
+            sheet_lower = sheet_name.lower()
+
+            if products_df is None and any(x in sheet_lower for x in ["product", "товар", "export"]):
+                df = gsheets.get_sheet_data(spreadsheet_id, sheet_name)
+                if not df.empty:
+                    products_df = df
+                    logger.info(f"Найден лист товаров: {sheet_name} ({len(df)} строк)")
+
+            if groups_df is None:
+                if supplier_name == "IZIDROP":
+                    if sheet_name == "Export Groups Sheet":
+                        raw_data = gsheets.service.spreadsheets().values().get(
+                            spreadsheetId=spreadsheet_id,
+                            range=sheet_name
+                        ).execute()
+
+                        values = raw_data.get('values', [])
+                        if values:
+                            data = []
+                            headers = values[0] if len(values) > 0 else []
+
+                            id_idx = headers.index('id') if 'id' in headers else 0
+                            name_idx = headers.index('name') if 'name' in headers else 1
+                            parent_idx = headers.index('parentId') if 'parentId' in headers else -1
+
+                            for row in values[1:]:
+                                item = {
+                                    'id': row[id_idx] if len(row) > id_idx else '',
+                                    'name': row[name_idx] if len(row) > name_idx else ''
+                                }
+                                if parent_idx != -1 and len(row) > parent_idx:
+                                    item['parentId'] = row[parent_idx]
+                                else:
+                                    item['parentId'] = ''
+                                data.append(item)
+
+                            groups_df = pd.DataFrame(data)
+                            logger.info(f"Обработан лист групп IZIDROP: {sheet_name} ({len(groups_df)} строк)")
+                else:
+                    if any(x in sheet_lower for x in ["group", "груп", "category"]):
+                        df = gsheets.get_sheet_data(spreadsheet_id, sheet_name)
+                        if not df.empty:
+                            groups_df = df
+                            logger.info(f"Найден лист групп: {sheet_name} ({len(df)} строк)")
+
+        results = {}
+
+        if products_df is not None:
+            results["products"] = transform_supplier_data(
+                products_df, supplier_name, "products", mapping)
+        else:
+            logger.warning(f"Нет данных товаров для {supplier_name}")
+            results["products"] = pd.DataFrame()
+
+        if groups_df is not None:
+            if supplier_name == "IZIDROP":
+                if 'parentId' not in groups_df.columns:
+                    groups_df['parentId'] = ''
+                groups_df['parentId'] = groups_df['parentId'].fillna('')
+
+            results["groups"] = transform_supplier_data(
+                groups_df, supplier_name, "groups", mapping)
+            logger.debug(f"Пример преобразованных групп:\n{results['groups'].head()}")
+        else:
+            logger.warning(f"Нет данных групп для {supplier_name}")
+            results["groups"] = pd.DataFrame()
+
+        logger.info(f"Итоговые данные: товаров - {len(results['products'])}, групп - {len(results['groups'])}")
+        return results
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка при обработке {supplier_name}: {str(e)}", exc_info=True)
+        return {"products": pd.DataFrame(), "groups": pd.DataFrame()}
+
+
+def validate_dataframe(df, sheet_type):
+    logger.info(f"Validating {sheet_type} DataFrame")
+
+    rows, cols = df.shape
+    logger.info(f"DataFrame size: {rows} rows x {cols} columns")
+
+    for col in df.columns:
+        max_len = df[col].astype(str).map(len).max()
+        if max_len > 1000:
+            logger.warning(f"Column '{col}' has very long values (max length: {max_len})")
+
+        if df[col].dtype == 'object':
+            unusual_chars = df[col].astype(str).str.contains('[^\\w\\s.,;:()\\[\\]{}"\'<>?!@#$%^&*+=\\-/\\\\\\\\]',
+                                                             regex=True)
+            if unusual_chars.any():
+                unusual_count = unusual_chars.sum()
+                logger.warning(f"Column '{col}' has {unusual_count} cells with unusual characters")
+
+            # Check for duplicate column names (would cause issues with pandas)
+        if len(df.columns) != len(set(df.columns)):
+            logger.warning("DataFrame has duplicate column names!")
+            for col in df.columns:
+                if list(df.columns).count(col) > 1:
+                    logger.warning(f"Column '{col}' appears multiple times")
+
+        # logger.info(f"Validation complete for {sheet_type} DataFrame")
+    return True
+
+
+def main():
+    try:
+        logger.info("=== Начало работы скрипта ===")
+
+        # Инициализация
+        gsheets = GoogleSheetsManager()
+        mapping = load_mapping()
+
+        # Сбор данных от всех поставщиков
+        all_products = []
+        all_groups = []
+
+        for supplier_name, spreadsheet_id in CONFIG["SUPPLIERS"].items():
+            logger.info(f"Обработка поставщика {supplier_name}")
+            supplier_data = process_supplier(gsheets, spreadsheet_id, supplier_name, mapping)
+
+            if supplier_data.get("products") is not None:
+                products_df = supplier_data["products"]
+                logger.info(f"Получено продуктов от {supplier_name}: {len(products_df)}")
+
+                # Валидация данных перед добавлением
+                if validate_dataframe(products_df, "products"):
+                    all_products.append(products_df)
+                else:
+                    logger.error(f"Ошибка валидации данных продуктов для {supplier_name}")
+
+            if supplier_data.get("groups") is not None:
+                groups_df = supplier_data["groups"]
+                logger.info(f"Получено групп от {supplier_name}: {len(groups_df)}")
+
+                # Валидация данных перед добавлением
+                if validate_dataframe(groups_df, "groups"):
+                    groups_with_source = groups_df.assign(Джерело_даних=supplier_name)
+                    all_groups.append(groups_with_source)
+                else:
+                    logger.error(f"Ошибка валидации данных групп для {supplier_name}")
+
+        # Объединение данных
+        products_cols, groups_cols = get_template_columns()
+
+        merged_products = pd.concat(all_products, ignore_index=True) if all_products \
+            else pd.DataFrame(columns=products_cols)
+        merged_groups = pd.concat(all_groups, ignore_index=True) if all_groups \
+            else pd.DataFrame(columns=groups_cols)
+
+        logger.info(f"Объединено продуктов: {len(merged_products)}")
+        logger.info(f"Объединено групп: {len(merged_groups)}")
+
+        # Проверка наличия обязательных столбцов
+        required_product_columns = ["Код_товару", "Ідентифікатор_товару", "Назва_позиції", "Ціна", "Наявність"]
+        for column in required_product_columns:
+            if column not in merged_products.columns:
+                logger.error(f"В объединенных продуктах отсутствует обязательный столбец: {column}")
+                raise ValueError(f"Отсутствует обязательный столбец: {column}")
+
+        required_group_columns = ["Номер_групи", "Назва_групи"]
+        for column in required_group_columns:
+            if column not in merged_groups.columns:
+                logger.error(f"В объединенных группах отсутствует обязательный столбец: {column}")
+                raise ValueError(f"Отсутствует обязательный столбец: {column}")
+
+        # Запись результатов
+        logger.info("Запись данных продуктов...")
+        success, error = gsheets.write_sheet_data(
+            CONFIG["OUTPUT_SPREADSHEET_ID"],
+            "Export Products Sheet",
+            merged_products
+        )
+        if not success:
+            raise Exception(f"Ошибка записи продуктов: {error}")
+
+        logger.info("Запись данных групп...")
+        success, error = gsheets.write_sheet_data(
+            CONFIG["OUTPUT_SPREADSHEET_ID"],
+            "Export Groups Sheet",
+            merged_groups
+        )
+        if not success:
+            raise Exception(f"Ошибка записи групп: {error}")
+
+        # --- НОВЫЙ КОД: Проверка и добавление пустых строк ---
+        logger.info("Проверка и обеспечение минимума пустых строк (1000)...")
+        gsheets._ensure_min_empty_rows("Export Products Sheet", 1000)
+        gsheets._ensure_min_empty_rows("Export Groups Sheet", 1000)
+        # --- КОНЕЦ НОВОГО КОДА ---
+
+        logger.info("=== Скрипт успешно завершен ===")
+
+    except Exception as e:
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: {e}", exc_info=True)
+        raise
+
+
+if __name__ == "__main__":
+    main()
