@@ -825,7 +825,7 @@ class FeedProcessor:
             }]
             self.service.batchUpdate(
                 spreadsheetId=self.spreadsheet_id,
-                body={'requests': requests}
+                body={'requests': [requests]}
             ).execute()
         except Exception as e:
             logger.warning(f"Couldn't format headers: {e}")
