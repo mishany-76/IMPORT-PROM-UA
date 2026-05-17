@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import time
 from datetime import datetime
+import re  # ДОБАВЛЕНО: нужно для обработки строк с ценами
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,7 +32,9 @@ CONFIG = {
     "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
     "DELAY_BETWEEN_REQUESTS": 2,
     "MAX_RETRIES": 7,
-    "BATCH_SIZE": 200
+    "BATCH_SIZE": 1000,
+    # Максимум строк в одном batchUpdate (лимит Google Sheets API)
+    "DELETE_BATCH_SIZE": 1000,
 }
 
 
@@ -73,11 +76,10 @@ class GoogleSheetsManager:
         for attempt in range(CONFIG["MAX_RETRIES"]):
             try:
                 self._wait_if_needed()
-                # Запрашиваем данные, чтобы получить форматированные значения, как они отображаются в таблице
                 result = self.service.spreadsheets().values().get(
                     spreadsheetId=spreadsheet_id,
                     range=sheet_name,
-                    valueRenderOption='FORMATTED_VALUE'  # Изменено на FORMATTED_VALUE
+                    valueRenderOption='FORMATTED_VALUE'
                 ).execute()
 
                 values = result.get('values', [])
@@ -86,19 +88,18 @@ class GoogleSheetsManager:
                     logger.warning(f"Лист {sheet_name} пуст или не найден в spreadsheets.values().get()")
                     return pd.DataFrame()
 
-                raw_headers = values[0]  # Исходные заголовки из первой строки листа
+                raw_headers = values[0]
                 data = values[1:]
 
                 # --- ДИАГНОСТИЧЕСКИЙ ЛОГ ВНУТРИ get_sheet_data ---
                 logger.info(
                     f"GET_SHEET_DATA DEBUG ({sheet_name}): Количество исходных заголовков (len(raw_headers)): {len(raw_headers)}")
                 logger.info(
-                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Первые 50 исходных заголовков: {raw_headers[:50]}")  # Логируем часть, чтобы не переполнять
+                    f"GET_SHEET_DATA DEBUG ({sheet_name}): Первые 50 исходных заголовков: {raw_headers[:50]}")
                 if len(raw_headers) > 50:
                     logger.info(
                         f"GET_SHEET_DATA DEBUG ({sheet_name}): Последние 50 исходных заголовков: {raw_headers[-50:]}")
 
-                # Подсчитаем дубликаты в raw_headers для диагностики
                 from collections import Counter
                 header_counts = Counter(raw_headers)
                 duplicate_headers_in_raw = {header: count for header, count in header_counts.items() if count > 1}
@@ -108,15 +109,12 @@ class GoogleSheetsManager:
                 else:
                     logger.info(
                         f"GET_SHEET_DATA DEBUG ({sheet_name}): Дублирующихся заголовков в raw_headers НЕ найдено.")
-                # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
 
-                # Создаем уникальные заголовки для pandas, если они действительно дублируются в raw_headers
-                # Это стандартное поведение pandas, но мы сделаем это явно для контроля
                 processed_headers = []
                 counts = {}
                 for header_val in raw_headers:
-                    if header_val is None: header_val = ''  # Заменяем None на пустую строку, если есть
-                    str_header_val = str(header_val)  # Убедимся, что это строка
+                    if header_val is None: header_val = ''
+                    str_header_val = str(header_val)
                     if str_header_val in counts:
                         counts[str_header_val] += 1
                         processed_headers.append(f"{str_header_val}.{counts[str_header_val] - 1}")
@@ -124,7 +122,6 @@ class GoogleSheetsManager:
                         counts[str_header_val] = 1
                         processed_headers.append(str_header_val)
 
-                # --- ДИАГНОСТИЧЕСКИЙ ЛОГ ПОСЛЕ ОБРАБОТКИ ЗАГОЛОВКОВ ---
                 logger.info(
                     f"GET_SHEET_DATA DEBUG ({sheet_name}): Количество обработанных заголовков (len(processed_headers)): {len(processed_headers)}")
                 logger.info(
@@ -132,30 +129,28 @@ class GoogleSheetsManager:
                 if len(processed_headers) > 50:
                     logger.info(
                         f"GET_SHEET_DATA DEBUG ({sheet_name}): Последние 50 обработанных заголовков: {processed_headers[-50:]}")
-                # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
 
                 normalized_data = []
-                for row_index, row_values in enumerate(data):
-                    # Важно: теперь нормализуем по длине processed_headers
-                    current_row_normalized = list(row_values)  # Копируем, чтобы не изменять исходный список
+                for row_values in data:
+                    current_row_normalized = list(row_values)
                     if len(current_row_normalized) < len(processed_headers):
                         current_row_normalized.extend([''] * (len(processed_headers) - len(current_row_normalized)))
                     elif len(current_row_normalized) > len(processed_headers):
                         current_row_normalized = current_row_normalized[:len(processed_headers)]
                     normalized_data.append(current_row_normalized)
 
-                if not normalized_data and not processed_headers:  # Если нет ни данных, ни заголовков
+                if not normalized_data and not processed_headers:
                     return pd.DataFrame()
-                if not processed_headers and normalized_data:  # Если есть данные, но нет заголовков (маловероятно после values[0])
+                if not processed_headers and normalized_data:
                     logger.warning(
                         f"GET_SHEET_DATA WARNING ({sheet_name}): Есть данные, но не удалось определить заголовки.")
-                    return pd.DataFrame(normalized_data)  # Pandas сам сгенерирует числовые заголовки
+                    return pd.DataFrame(normalized_data)
 
                 df = pd.DataFrame(normalized_data, columns=processed_headers)
                 logger.info(
                     f"GET_SHEET_DATA INFO ({sheet_name}): DataFrame создан. Количество столбцов в DataFrame: {len(df.columns)}")
                 logger.info(
-                    f"GET_SHEET_DATA INFO ({sheet_name}): Столбцы DataFrame: {df.columns.tolist()[:50]}")  # Логируем часть столбцов DataFrame
+                    f"GET_SHEET_DATA INFO ({sheet_name}): Столбцы DataFrame: {df.columns.tolist()[:50]}")
                 if len(df.columns) > 50:
                     logger.info(
                         f"GET_SHEET_DATA INFO ({sheet_name}): Последние 50 столбцов DataFrame: {df.columns.tolist()[-50:]}")
@@ -177,248 +172,285 @@ class GoogleSheetsManager:
                 logger.info(f"Пустой DataFrame, нет данных для записи в {sheet_name}")
                 return True, None
 
-            required_rows = len(df) + 1
-            self._ensure_sheet_capacity(spreadsheet_id, sheet_name, required_rows)
-
+            # ── Шаг 1: читаем только строку заголовков (строка 1) ──────────────
             self._wait_if_needed()
-            existing_data = self._execute_with_retry(
+            hdr_result = self._execute_with_retry(
                 self.service.spreadsheets().values().get(
                     spreadsheetId=spreadsheet_id,
-                    range=sheet_name
+                    range=f"{sheet_name}!1:1",
+                    valueRenderOption='FORMATTED_VALUE'
                 )
             )
+            header_values = hdr_result.get('values', [])
 
-            existing_values = existing_data.get('values', [])
-
-            if not existing_values:
+            # Лист пустой — пишем с нуля
+            if not header_values:
                 logger.info(f"Таблица {sheet_name} пустая, записываем новые данные")
+                self._ensure_sheet_capacity(spreadsheet_id, sheet_name, len(df) + 1)
                 for i in range(0, len(df), CONFIG["BATCH_SIZE"]):
-                    batch = df.iloc[i:i + CONFIG["BATCH_SIZE"]]
-                    self._write_batch(spreadsheet_id, sheet_name, batch, i == 0)
+                    self._write_batch(spreadsheet_id, sheet_name,
+                                      df.iloc[i:i + CONFIG["BATCH_SIZE"]], i == 0)
                 return True, None
 
-            headers = existing_values[0] if existing_values else []
+            headers = header_values[0]
 
-            # Обновленная логика определения ключевого столбца для групп
-            if "Export Groups Sheet" in sheet_name:
-                id_column = "Ідентифікатор_групи" if "Ідентифікатор_групи" in df.columns else \
-                    "Номер_групи" if "Номер_групи" in df.columns else \
-                        df.columns[0]
-
-                # Для групп проверяем также по названию группы
+            # ── Шаг 2: определяем ключевые столбцы ────────────────────────────
+            is_groups = "Export Groups Sheet" in sheet_name
+            if is_groups:
+                id_column = next((c for c in ["Ідентифікатор_групи", "Номер_групи"]
+                                  if c in df.columns), df.columns[0])
                 name_column = "Назва_групи" if "Назва_групи" in df.columns else None
             else:
-                id_column = "Ідентифікатор_товару" if "Ідентифікатор_товару" in df.columns else \
-                    "Код_товару" if "Код_товару" in df.columns else df.columns[0]
+                id_column = next((c for c in ["Ідентифікатор_товару", "Код_товару"]
+                                  if c in df.columns), df.columns[0])
+                name_column = None
 
-            existing_data_dict = {}
-            for i in range(1, len(existing_values)):
-                row = existing_values[i]
-                if len(row) > 0:
-                    # Для групп используем комбинацию идентификатора и названия, если доступно
-                    if "Export Groups Sheet" in sheet_name and name_column:
-                        id_idx = headers.index(id_column) if id_column in headers else 0
-                        name_idx = headers.index(name_column) if name_column in headers else -1
+            id_col_idx = headers.index(id_column) if id_column in headers else 0
+            name_col_idx = headers.index(name_column) if name_column in headers else -1
 
-                        if id_idx < len(row) and name_idx < len(row):
-                            row_key = (row[id_idx], row[name_idx])
-                        elif id_idx < len(row):
-                            row_key = row[id_idx]
-                        else:
-                            continue
-                    else:
-                        id_idx = headers.index(id_column) if id_column in headers else 0
-                        if id_idx < len(row):
-                            row_key = row[id_idx]
-                        else:
-                            continue
+            def _col_letter(idx):
+                letter, n = '', idx + 1
+                while n > 0:
+                    n, rem = divmod(n - 1, 26)
+                    letter = chr(65 + rem) + letter
+                return letter
 
-                    existing_data_dict[row_key] = {
-                        'row_idx': i + 1,
-                        'data': row
-                    }
+            # ── Шаг 3: читаем ключевой столбец (+ name_column для групп) ──────
+            #    Это ОДИН узкий запрос вместо чтения всего листа целиком.
+            key_col_letter = _col_letter(id_col_idx)
+            self._wait_if_needed()
+            key_result = self._execute_with_retry(
+                self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!{key_col_letter}:{key_col_letter}",
+                    valueRenderOption='FORMATTED_VALUE'
+                )
+            )
+            key_col_values = key_result.get('values', [])  # [[hdr],[v1],[v2],...]
 
-            # Определяем критические поля в зависимости от типа листа
-            if "Export Groups Sheet" in sheet_name:
+            # Реальное количество занятых строк берём из метаданных листа (кэш),
+            # а НЕ из длины ключевого столбца — ключ может быть пустым в части строк.
+            self._ensure_sheet_capacity(spreadsheet_id, sheet_name, 1)  # прогреваем кэш без расширения
+            cached = self._sheet_id_cache.get(sheet_name)
+            if isinstance(cached, tuple):
+                # rowCount — полный размер листа; вычитаем пустые строки в конце.
+                # Используем длину ключевого столбца как нижнюю границу, но
+                # берём максимум с num_data_rows который вычислим позже.
+                _sheet_total_rows = cached[1]
+            else:
+                _sheet_total_rows = len(key_col_values)
+
+            # После построения col_data пересчитаем точнее (см. ниже)
+            total_existing_rows = len(key_col_values)  # временно, уточняется в Шаге 6
+
+            # ── Шаг 4: определяем критические индексы ─────────────────────────
+            if is_groups:
                 critical_fields = ["Назва_групи", "Назва_групи_укр", "Ідентифікатор_групи"]
             else:
-                critical_fields = ["Назва_позиції", "Назва_позиції_укр", "Опис", "Опис_укр", "Наявність", "Ціна",
-                                   "Кількість", "Знижка"]
+                critical_fields = [
+                    "Назва_позиції", "Назва_позиції_укр", "Опис", "Опис_укр",
+                    "Наявність", "Ціна", "Ціна_від", "Кількість", "Знижка",
+                    "Ярлик", "Де_знаходиться_товар", "Тип_товару",
+                ]
+                for _i in range(1, 25):
+                    critical_fields.append("Назва_Характеристики" if _i == 1 else f"Назва_Характеристики_{_i}")
+                    critical_fields.append(
+                        "Одиниця_виміру_Характеристики" if _i == 1 else f"Одиниця_виміру_Характеристики_{_i}")
+                    critical_fields.append("Значення_Характеристики" if _i == 1 else f"Значення_Характеристики_{_i}")
+            critical_indices = [headers.index(f) for f in critical_fields if f in headers]
 
-            critical_indices = [headers.index(field) for field in critical_fields if field in headers]
+            # ── Шаг 5: читаем только критические столбцы чанками ─────────────
+            #    Вместо загрузки всего листа (20к строк × 127 колонок) читаем
+            #    только нужные колонки. Разбиваем на чанки по BATCH_SIZE колонок.
+            COL_CHUNK = 20  # столбцов за один запрос
+            # Словарь col_idx -> list значений (без заголовка, 0-based по строкам)
+            col_data = {}
 
-            # Для групп используем уникальность по идентификатору и названию
-            if "Export Groups Sheet" in sheet_name and name_column:
+            unique_col_indices = sorted(set(critical_indices + [id_col_idx]
+                                            + ([name_col_idx] if name_col_idx != -1 else [])))
+
+            for chunk_start in range(0, len(unique_col_indices), COL_CHUNK):
+                chunk_cols = unique_col_indices[chunk_start:chunk_start + COL_CHUNK]
+                # Строим multi-range: A2:A, C2:C, ...
+                ranges = [f"{sheet_name}!{_col_letter(ci)}2:{_col_letter(ci)}"
+                          for ci in chunk_cols]
+                self._wait_if_needed()
+                batch_res = self._execute_with_retry(
+                    self.service.spreadsheets().values().batchGet(
+                        spreadsheetId=spreadsheet_id,
+                        ranges=ranges,
+                        valueRenderOption='FORMATTED_VALUE'
+                    )
+                )
+                for col_idx, vr in zip(chunk_cols, batch_res.get('valueRanges', [])):
+                    vals = vr.get('values', [])
+                    col_data[col_idx] = [row[0] if row else '' for row in vals]
+
+            # ── Шаг 6: строим карту существующих строк по ключу ───────────────
+            # num_data_rows = максимальная длина любого из прочитанных столбцов.
+            # total_existing_rows = реальная последняя занятая строка в листе
+            # (используем максимум между ключевым столбцом и всеми критическими).
+            num_data_rows = max((len(v) for v in col_data.values()), default=0)
+            total_existing_rows = max(total_existing_rows, num_data_rows + 1)  # +1 за заголовок
+            logger.info(f"Реальных занятых строк в {sheet_name} (включая заголовок): {total_existing_rows}")
+
+            existing_data_dict = {}
+            for row_offset in range(num_data_rows):
+                id_val = col_data.get(id_col_idx, [])
+                id_val = id_val[row_offset] if row_offset < len(id_val) else ''
+                if not id_val:
+                    continue
+                sheet_row = row_offset + 2  # 1-based, +1 за заголовок
+
+                if is_groups and name_col_idx != -1:
+                    nm_vals = col_data.get(name_col_idx, [])
+                    nm_val = nm_vals[row_offset] if row_offset < len(nm_vals) else ''
+                    row_key = (id_val, nm_val)
+                else:
+                    row_key = id_val
+
+                # data: dict col_idx -> значение (для сравнения с новыми данными)
+                row_cell_data = {ci: (col_data[ci][row_offset]
+                                      if ci in col_data and row_offset < len(col_data[ci])
+                                      else '')
+                                 for ci in critical_indices}
+                existing_data_dict[row_key] = {
+                    'row_idx': sheet_row,
+                    'data': row_cell_data,
+                }
+
+            # ── Шаг 7: сравниваем df с существующими данными ─────────────────
+            if is_groups and name_column:
                 df_unique = df.drop_duplicates(subset=[id_column, name_column], keep='last')
             else:
                 df_unique = df.drop_duplicates(subset=[id_column], keep='last')
 
-            new_rows = pd.DataFrame(columns=df.columns)
-            updates = []
+            new_rows_list = []
+            batch_value_updates = []
             deleted_rows = set(existing_data_dict.keys())
 
-            for idx, row in df_unique.iterrows():
+            for _, row in df_unique.iterrows():
                 row_id = str(row[id_column])
-                # Для групп создаем ключ для сравнения
-                if "Export Groups Sheet" in sheet_name and name_column:
-                    row_name = str(row[name_column]) if name_column in row and pd.notna(row[name_column]) else ""
+                if is_groups and name_column:
+                    row_name = str(row[name_column]) if pd.notna(row.get(name_column, '')) else ''
                     row_key = (row_id, row_name)
                 else:
                     row_key = row_id
 
                 if row_key in existing_data_dict:
-                    existing_row = existing_data_dict[row_key]['data']
+                    deleted_rows.discard(row_key)
+                    existing_row_cells = existing_data_dict[row_key]['data']
                     row_idx = existing_data_dict[row_key]['row_idx']
 
-                    deleted_rows.discard(row_key)
-
-                    update_needed = False
-                    update_values = existing_row.copy()
-
+                    # Собираем только изменившиеся ячейки
+                    cell_updates = []
                     for col_idx in critical_indices:
-                        if col_idx < len(headers):
-                            df_col = headers[col_idx]
-                            if df_col in row:
-                                new_value = str(row[df_col]) if pd.notna(row[df_col]) else ''
-                                old_value = str(existing_row[col_idx]) if col_idx < len(existing_row) else ''
+                        col_name = headers[col_idx]
+                        new_value = str(row[col_name]) if col_name in row and pd.notna(row.get(col_name)) else ''
+                        old_value = existing_row_cells.get(col_idx, '')
+                        if new_value != old_value:
+                            cell_updates.append({
+                                'range': f"{sheet_name}!{_col_letter(col_idx)}{row_idx}",
+                                'values': [[new_value]]
+                            })
 
-                                if new_value != old_value:
-                                    update_needed = True
-                                if col_idx < len(update_values):
-                                    update_values[col_idx] = new_value
-                                else:
-                                    update_values.extend([''] * (col_idx - len(update_values) + 1))
-                                    update_values[col_idx] = new_value
-
-                    if update_needed:
-                        updates.append((row_idx, update_values))
+                    batch_value_updates.extend(cell_updates)
                 else:
-                    new_rows = pd.concat([new_rows, pd.DataFrame([row])], ignore_index=True)
+                    new_rows_list.append(row)
 
-            # --- НОВЫЙ КОД: Пакетное обновление существующих строк (Батчи + Чанки) ---
-            if updates:
-                logger.info(f"Подготовка к пакетному обновлению {len(updates)} строк в {sheet_name}...")
-
-                # Формируем список словарей для values().batchUpdate()
-                batch_update_data = []
-                for row_idx, row_data in updates:
-                    range_name = f"{sheet_name}!A{row_idx}"
-                    batch_update_data.append({
-                        'range': range_name,
-                        'values': [row_data]
-                    })
-
-                # Разбиваем на чанки по 500 строк, чтобы не превысить лимиты Google API
-                CHUNK_SIZE = 500
-                total_chunks = (len(batch_update_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-                for chunk_idx in range(total_chunks):
-                    chunk_start = chunk_idx * CHUNK_SIZE
-                    chunk_end = min(chunk_start + CHUNK_SIZE, len(batch_update_data))
-                    chunk_data = batch_update_data[chunk_start:chunk_end]
-
-                    logger.info(
-                        f"Отправка чанка обновлений {chunk_idx + 1}/{total_chunks} (строки {chunk_start + 1}-{chunk_end}) в {sheet_name}...")
-
-                    body = {
-                        'valueInputOption': 'RAW',
-                        'data': chunk_data
-                    }
-
+            # ── Шаг 8: отправляем обновления батчами ─────────────────────────
+            if batch_value_updates:
+                logger.info(f"Отправляем {len(batch_value_updates)} обновлений ячеек в {sheet_name}")
+                for chunk_start in range(0, len(batch_value_updates), CONFIG["BATCH_SIZE"]):
+                    chunk = batch_value_updates[chunk_start:chunk_start + CONFIG["BATCH_SIZE"]]
                     self._execute_with_retry(
                         self.service.spreadsheets().values().batchUpdate(
                             spreadsheetId=spreadsheet_id,
-                            body=body
+                            body={'valueInputOption': 'RAW', 'data': chunk}
                         )
                     )
+                    logger.info(f"  Обновления: чанк {chunk_start + 1}–{chunk_start + len(chunk)}")
 
-                    # Небольшая пауза между чанками для надежности
-                    if chunk_idx < total_chunks - 1:
-                        time.sleep(1)
-            # --- КОНЕЦ ПАКЕТНОГО ОБНОВЛЕНИЯ ---
+            # ── Шаг 9: добавляем новые строки ────────────────────────────────
+            if new_rows_list:
+                new_rows_df = pd.DataFrame(new_rows_list, columns=df.columns)
+                # start_row = строка ПОСЛЕ последней занятой (total_existing_rows уже включает заголовок)
+                start_row = total_existing_rows + 1
+                needed = start_row + len(new_rows_df) - 1
+                logger.info(f"Новые строки: {len(new_rows_df)} шт., запись начиная со строки {start_row}")
+                self._ensure_sheet_capacity(spreadsheet_id, sheet_name, needed)
 
-            if not new_rows.empty:
-                start_row = len(existing_values) + 1
-                range_name = f"{sheet_name}!A{start_row}"
-
-                for i in range(0, len(new_rows), CONFIG["BATCH_SIZE"]):
-                    batch = new_rows.iloc[i:i + CONFIG["BATCH_SIZE"]]
+                for i in range(0, len(new_rows_df), CONFIG["BATCH_SIZE"]):
+                    batch = new_rows_df.iloc[i:i + CONFIG["BATCH_SIZE"]]
                     values = batch.fillna('').values.tolist()
-
                     self._execute_with_retry(
                         self.service.spreadsheets().values().update(
                             spreadsheetId=spreadsheet_id,
-                            range=range_name,
+                            range=f"{sheet_name}!A{start_row}",
                             valueInputOption='RAW',
                             body={'values': values}
                         )
                     )
-
                     start_row += len(values)
-                    range_name = f"{sheet_name}!A{start_row}"
+                logger.info(f"Добавлено {len(new_rows_df)} новых строк в {sheet_name}")
 
+            # ── Шаг 10: удаляем строки отсутствующих позиций ─────────────────
             if deleted_rows:
-                rows_to_delete = sorted([existing_data_dict[row_id]['row_idx'] for row_id in deleted_rows],
-                                        reverse=True)
-
-                logger.info(f"Удаление товаров/групп, отсутствующих у поставщика: {len(deleted_rows)} позиций")
-                for row_id in deleted_rows:
-                    logger.info(f"Позиция с ключом {row_id} отсутствует у поставщика и будет удалена")
-
-                # Собираем все запросы на удаление в один список и отправляем одним batchUpdate.
-                # Строки отсортированы по убыванию — Google Sheets корректно пересчитывает индексы.
+                rows_to_delete = sorted(
+                    [existing_data_dict[k]['row_idx'] for k in deleted_rows], reverse=True)
+                logger.info(f"Удаление {len(deleted_rows)} позиций, отсутствующих у поставщика")
                 sheet_id = self._get_sheet_id(sheet_name)
                 delete_requests = [
-                    {
-                        'deleteDimension': {
-                            'range': {
-                                'sheetId': sheet_id,
-                                'dimension': 'ROWS',
-                                'startIndex': row_idx - 1,
-                                'endIndex': row_idx
-                            }
-                        }
-                    }
-                    for row_idx in rows_to_delete
+                    {'deleteDimension': {'range': {
+                        'sheetId': sheet_id, 'dimension': 'ROWS',
+                        'startIndex': r - 1, 'endIndex': r
+                    }}}
+                    for r in rows_to_delete
                 ]
-
-                self._execute_with_retry(
-                    self.service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={'requests': delete_requests}
+                for chunk_start in range(0, len(delete_requests), CONFIG["DELETE_BATCH_SIZE"]):
+                    chunk = delete_requests[chunk_start:chunk_start + CONFIG["DELETE_BATCH_SIZE"]]
+                    self._execute_with_retry(
+                        self.service.spreadsheets().batchUpdate(
+                            spreadsheetId=spreadsheet_id,
+                            body={'requests': chunk}
+                        )
                     )
-                )
+                logger.info(f"Удалено {len(rows_to_delete)} строк")
 
-                logger.info(f"Удалено {len(rows_to_delete)} строк одним запросом (позиции отсутствуют у поставщика)")
-
+            # ── Шаг 11: удаляем дубликаты ────────────────────────────────────
             sheet_type = "products" if "Export Products Sheet" in sheet_name else "groups"
             self._remove_duplicates(spreadsheet_id, sheet_name, sheet_type)
 
             logger.info(
-                f"Данные успешно обновлены в {sheet_name}: {len(updates)} обновлено, {len(new_rows)} добавлено, {len(deleted_rows)} удалено")
+                f"Готово [{sheet_name}]: обновлено ячеек={len(batch_value_updates)}, "
+                f"добавлено строк={len(new_rows_list)}, удалено строк={len(deleted_rows)}")
             return True, None
 
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Ошибка записи в {sheet_name}: {error_msg}")
-            return False, error_msg
+            logger.error(f"Ошибка записи в {sheet_name}: {e}", exc_info=True)
+            return False, str(e)
 
     def _get_sheet_id(self, sheet_name):
         try:
-            if sheet_name in self._sheet_id_cache:
-                return self._sheet_id_cache[sheet_name]
+            cached = self._sheet_id_cache.get(sheet_name)
+            if cached is not None:
+                return cached[0] if isinstance(cached, tuple) else cached
 
             self._wait_if_needed()
             sheets_metadata = self.service.spreadsheets().get(
-                spreadsheetId=CONFIG["OUTPUT_SPREADSHEET_ID"]
+                spreadsheetId=CONFIG["OUTPUT_SPREADSHEET_ID"],
+                fields='sheets.properties'
             ).execute()
 
             for sheet in sheets_metadata.get('sheets', []):
                 title = sheet['properties']['title']
-                self._sheet_id_cache[title] = sheet['properties']['sheetId']
+                sid = sheet['properties']['sheetId']
+                rc = sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
+                self._sheet_id_cache[title] = (sid, rc)
 
-            if sheet_name in self._sheet_id_cache:
-                return self._sheet_id_cache[sheet_name]
+            cached = self._sheet_id_cache.get(sheet_name)
+            if cached is not None:
+                return cached[0] if isinstance(cached, tuple) else cached
 
             logger.error(f"Лист {sheet_name} не найден")
             raise ValueError(f"Лист {sheet_name} не найден")
@@ -473,73 +505,79 @@ class GoogleSheetsManager:
                         current_id = row[id_idx].strip()
                         if current_id in seen_ids:
                             original_idx = seen_ids[current_id]
-                            original_row = values[original_idx]
-
-                            update_needed = False
                             if original_idx not in rows_to_update:
-                                rows_to_update[original_idx] = original_row.copy()
+                                rows_to_update[original_idx] = values[original_idx].copy()
 
                             for field, idx in critical_fields.items():
                                 if idx is not None and idx < len(row):
-                                    if idx < len(row) and row[idx].strip():
+                                    if row[idx].strip():
                                         if idx >= len(rows_to_update[original_idx]):
                                             rows_to_update[original_idx].extend(
                                                 [''] * (idx - len(rows_to_update[original_idx]) + 1))
                                         rows_to_update[original_idx][idx] = row[idx]
-                                        update_needed = True
 
                             rows_to_delete.append(i + 1)
                         else:
                             seen_ids[current_id] = i
 
-                # --- НОВОЕ ПАКЕТНОЕ ОБНОВЛЕНИЕ СТРОК-ДУБЛИКАТОВ ---
+                # ----------------------------------------------------------------
+                # ИСПРАВЛЕНИЕ #2: обновляем оригинальные строки одним батч-запросом
+                # вместо N отдельных values().update() в цикле.
+                # ----------------------------------------------------------------
                 if rows_to_update:
-                    update_data = []
-                    for idx, updated_row in rows_to_update.items():
-                        update_data.append({
+                    batch_updates = [
+                        {
                             'range': f"{sheet_name}!A{idx + 1}",
                             'values': [updated_row]
-                        })
-
-                    body = {
-                        'valueInputOption': 'RAW',
-                        'data': update_data
-                    }
-                    self._wait_if_needed()
-                    self._execute_with_retry(
+                        }
+                        for idx, updated_row in rows_to_update.items()
+                    ]
+                    for chunk_start in range(0, len(batch_updates), CONFIG["BATCH_SIZE"]):
+                        chunk = batch_updates[chunk_start:chunk_start + CONFIG["BATCH_SIZE"]]
+                        self._wait_if_needed()
                         self.service.spreadsheets().values().batchUpdate(
                             spreadsheetId=spreadsheet_id,
-                            body=body
-                        )
-                    )
+                            body={
+                                'valueInputOption': 'RAW',
+                                'data': chunk
+                            }
+                        ).execute()
                     logger.info(
-                        f"Обновлено {len(rows_to_update)} оригинальных строк с данными из дубликатов (Пакетный запрос).")
+                        f"Обновлено {len(rows_to_update)} оригинальных строк (слияние дубликатов) одним батчем.")
 
-                # --- НОВОЕ ПАКЕТНОЕ УДАЛЕНИЕ СТРОК-ДУБЛИКАТОВ ---
+                # ----------------------------------------------------------------
+                # ИСПРАВЛЕНИЕ #3: удаляем дубликаты одним batchUpdate
+                # вместо N отдельных batchUpdate с одним запросом каждый.
+                # ----------------------------------------------------------------
                 if rows_to_delete:
-                    delete_requests = []
-                    for row_idx in sorted(rows_to_delete, reverse=True):
-                        delete_requests.append({
+                    sheet_id = self._get_sheet_id(sheet_name)
+                    delete_requests = [
+                        {
                             'deleteDimension': {
                                 'range': {
-                                    'sheetId': self._get_sheet_id(sheet_name),
+                                    'sheetId': sheet_id,
                                     'dimension': 'ROWS',
                                     'startIndex': row_idx - 1,
                                     'endIndex': row_idx
                                 }
                             }
-                        })
+                        }
+                        for row_idx in sorted(rows_to_delete, reverse=True)
+                    ]
 
-                    self._wait_if_needed()
-                    self._execute_with_retry(
+                    # Разбиваем на чанки, если дубликатов очень много
+                    for chunk_start in range(0, len(delete_requests), CONFIG["DELETE_BATCH_SIZE"]):
+                        chunk = delete_requests[chunk_start:chunk_start + CONFIG["DELETE_BATCH_SIZE"]]
+                        self._wait_if_needed()
                         self.service.spreadsheets().batchUpdate(
                             spreadsheetId=spreadsheet_id,
-                            body={'requests': delete_requests}
-                        )
-                    )
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name} (Пакетный запрос).")
+                            body={'requests': chunk}
+                        ).execute()
+
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name} (батч-запрос)")
 
             else:
+                # --- Группы ---
                 group_num_col = "Ідентифікатор_групи"
                 group_name_col = "Назва_групи"
 
@@ -562,29 +600,34 @@ class GoogleSheetsManager:
                         else:
                             seen_groups[group_key] = i
 
-                # --- НОВОЕ ПАКЕТНОЕ УДАЛЕНИЕ ДЛЯ ГРУПП ---
+                # ----------------------------------------------------------------
+                # ИСПРАВЛЕНИЕ #4: то же для групп — один batchUpdate вместо цикла
+                # ----------------------------------------------------------------
                 if rows_to_delete:
-                    delete_requests = []
-                    for row_idx in sorted(rows_to_delete, reverse=True):
-                        delete_requests.append({
+                    sheet_id = self._get_sheet_id(sheet_name)
+                    delete_requests = [
+                        {
                             'deleteDimension': {
                                 'range': {
-                                    'sheetId': self._get_sheet_id(sheet_name),
+                                    'sheetId': sheet_id,
                                     'dimension': 'ROWS',
                                     'startIndex': row_idx - 1,
                                     'endIndex': row_idx
                                 }
                             }
-                        })
+                        }
+                        for row_idx in sorted(rows_to_delete, reverse=True)
+                    ]
 
-                    self._wait_if_needed()
-                    self._execute_with_retry(
+                    for chunk_start in range(0, len(delete_requests), CONFIG["DELETE_BATCH_SIZE"]):
+                        chunk = delete_requests[chunk_start:chunk_start + CONFIG["DELETE_BATCH_SIZE"]]
+                        self._wait_if_needed()
                         self.service.spreadsheets().batchUpdate(
                             spreadsheetId=spreadsheet_id,
-                            body={'requests': delete_requests}
-                        )
-                    )
-                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов групп в {sheet_name} (Пакетный запрос).")
+                            body={'requests': chunk}
+                        ).execute()
+
+                    logger.info(f"Удалено {len(rows_to_delete)} дубликатов в {sheet_name} (батч-запрос)")
 
         except Exception as e:
             logger.error(f"Ошибка при удалении дубликатов в {sheet_name}: {e}")
@@ -655,87 +698,85 @@ class GoogleSheetsManager:
             spreadsheetId=spreadsheet_id,
             range=f"{sheet_name}!A:A"
         ).execute()
-
-        # values включает заголовок, если он есть
         values = result.get('values', [])
-
-        # Находим последнюю строку, которая содержит данные, чтобы определить следующую пустую строку.
-        # Если values = ['Header'], len(values) = 1. Следующая пустая строка = 2.
-        # Если values = [], len(values) = 0. Следующая пустая строка = 1.
-
-        # Но поскольку write_sheet_data использует существующие данные для определения того,
-        # что записывать (заголовок или данные), _get_next_empty_row нужен только для _write_batch,
-        # который вызывается только для последующих пакетов.
-        # В контексте write_sheet_data, если existing_values не пуст, len(existing_values) - это количество занятых строк,
-        # и следующая строка - len(existing_values) + 1.
-
-        # Здесь мы просто возвращаем следующую строку после последней, которая была получена.
-        # Если values содержит только заголовок, len(values) = 1, возвращаем 2.
         return len(values) + 1
 
     def _ensure_sheet_capacity(self, spreadsheet_id, sheet_name, required_rows):
+        """Расширяет лист если строк меньше required_rows.
+        Использует кэш _sheet_id_cache для хранения {sheet_name: (sheetId, rowCount)},
+        чтобы не делать лишний API-запрос если размер уже известен и достаточен.
+        """
         try:
+            cached = self._sheet_id_cache.get(sheet_name)
+            # cached хранит либо int (только sheetId — старый формат), либо tuple (sheetId, rowCount)
+            if isinstance(cached, tuple):
+                sheet_id, cached_rows = cached
+                if cached_rows >= required_rows:
+                    logger.info(
+                        f"Лист {sheet_name}: кэш показывает {cached_rows} строк >= {required_rows}, расширение не нужно.")
+                    return False
+            # Нужно узнать актуальный размер
             self._wait_if_needed()
             sheets_info = self.service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
                 fields='sheets.properties'
             ).execute()
 
-            target_sheet = None
+            # Обновляем весь кэш попутно
             for sheet in sheets_info.get('sheets', []):
-                if sheet['properties']['title'] == sheet_name:
-                    target_sheet = sheet
-                    break
+                t = sheet['properties']['title']
+                sid = sheet['properties']['sheetId']
+                rc = sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
+                self._sheet_id_cache[t] = (sid, rc)
 
-            if target_sheet:
-                current_rows = target_sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
-                logger.info(f"Лист {sheet_name} имеет {current_rows} строк, требуется {required_rows}")
+            entry = self._sheet_id_cache.get(sheet_name)
+            if not entry:
+                logger.error(f"Лист {sheet_name} не найден в таблице.")
+                return False
 
-                if current_rows < required_rows:
-                    new_row_count = max(required_rows + 1000, int(required_rows * 1.0))
-                    logger.info(f"Расширяем лист {sheet_name} до {new_row_count} строк")
+            sheet_id, current_rows = entry
+            logger.info(f"Лист {sheet_name} имеет {current_rows} строк, требуется {required_rows}")
 
-                    request = {
-                        'updateSheetProperties': {
-                            'properties': {
-                                'sheetId': target_sheet['properties']['sheetId'],
-                                'gridProperties': {
-                                    'rowCount': new_row_count
-                                }
-                            },
-                            'fields': 'gridProperties.rowCount'
-                        }
+            if current_rows < required_rows:
+                new_row_count = required_rows + 1000  # запас
+                logger.info(f"Расширяем лист {sheet_name} до {new_row_count} строк")
+
+                request = {
+                    'updateSheetProperties': {
+                        'properties': {
+                            'sheetId': sheet_id,
+                            'gridProperties': {'rowCount': new_row_count}
+                        },
+                        'fields': 'gridProperties.rowCount'
                     }
+                }
+                self._wait_if_needed()
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={'requests': [request]}
+                ).execute()
 
-                    self._wait_if_needed()
-                    self.service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={'requests': [request]}
-                    ).execute()
-
-                    logger.info(f"Лист {sheet_name} успешно расширен до {new_row_count} строк")
-                    return True
+                # Обновляем кэш
+                self._sheet_id_cache[sheet_name] = (sheet_id, new_row_count)
+                logger.info(f"Лист {sheet_name} успешно расширен до {new_row_count} строк")
+                return True
 
             return False
         except Exception as e:
             logger.error(f"Ошибка при расширении листа {sheet_name}: {e}")
             return False
 
-    # --- Новый метод для выполнения требования ---
     def _ensure_min_empty_rows(self, sheet_name, min_empty_rows=1000):
         try:
-            # 1. Определяем последнюю строку с данными (включая заголовок)
             self._wait_if_needed()
             result = self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range=f"{sheet_name}!A:A"
             ).execute()
 
-            # values включает все строки до последней заполненной, включая заголовок.
             values = result.get('values', [])
             last_used_row_index = len(values)
 
-            # 2. Получаем общее количество строк на листе
             self._wait_if_needed()
             sheets_info = self.service.spreadsheets().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -753,16 +794,12 @@ class GoogleSheetsManager:
                 return
 
             current_total_rows = target_sheet['properties'].get('gridProperties', {}).get('rowCount', 0)
-
-            # 3. Рассчитываем количество пустых строк
             empty_rows = current_total_rows - last_used_row_index
 
             logger.info(
                 f"Лист '{sheet_name}': Всего строк: {current_total_rows}, Занятых строк: {last_used_row_index}, Пустых строк: {empty_rows}")
 
-            # 4. Проверяем и добавляем, если нужно
             if empty_rows < min_empty_rows:
-                # Количество строк для добавления
                 rows_to_add = min_empty_rows - empty_rows
                 new_row_count = current_total_rows + rows_to_add
 
@@ -794,8 +831,6 @@ class GoogleSheetsManager:
 
         except Exception as e:
             logger.error(f"Ошибка при проверке/добавлении пустых строк в {sheet_name}: {e}")
-
-    # --- Конец нового метода ---
 
 
 def load_mapping():
@@ -875,7 +910,7 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
         elif supplier_name in ["MOYDROP", "SPECULANT", "KIRS", "BAGSROOM"]:
             row_data['Ідентифікатор_товару'] = row_dict.get('id', '')
             row_data['Код_товару'] = row_dict.get('vendorCode', '')
-        # Для FOOTBALLERS идентификаторы должны мапиться через основной цикл, так как они есть в column_mapping.json
+        # Для FOOTBALLERS идентификаторы маппятся через основной цикл (column_mapping.json)
 
         # Основной цикл маппинга на основе column_mapping.json
         for supplier_col, target_col in supplier_mapping.items():
@@ -887,104 +922,79 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
                 continue
 
             if isinstance(target_col, list) and supplier_col.startswith("param_"):
-                # Логика для param_ характеристик (используется AGER, SPECULANT, KIRS, etc.)
-                char_name = target_col[
-                    2]  # Например, "Бренд" из ["Назва_Характеристики", "Значення_Характеристики", "Бренд"]
+                char_name = target_col[2]
 
-                # Ищем первый свободный слот для характеристик в row_data
-                for idx in range(1, 25):  # Проверяем слоты от _1 до _24
+                for idx in range(1, 25):
                     name_col_target = f"Назва_Характеристики_{idx}" if idx > 1 else "Назва_Характеристики"
                     value_col_target = f"Значення_Характеристики_{idx}" if idx > 1 else "Значення_Характеристики"
-                    # Единицы измерения для param_ характеристик не задаются явным образом через эту структуру в вашем маппинге,
-                    # но можно добавить, если необходимо, или они должны быть частью `value`
 
-                    if not row_data[name_col_target]:  # Если слот для имени характеристики пуст
+                    if not row_data[name_col_target]:
                         row_data[name_col_target] = char_name
                         str_value = str(value)
                         if str_value.startswith("'") and not str_value.startswith("''"):
                             str_value = str_value[1:]
                         row_data[value_col_target] = str_value
-                        break  # Характеристика размещена, переходим к следующему param_ из маппинга
-            else:  # Прямое сопоставление
+                        break
+            else:
                 if target_col in row_data:
                     str_value = str(value)
                     if str_value.startswith("'") and not str_value.startswith("''"):
                         str_value = str_value[1:]
                     row_data[target_col] = str_value
 
-        # Специальная обработка для повторяющихся характеристик "FOOTBALLERS"
+        # Специальная обработка повторяющихся характеристик FOOTBALLERS
         if supplier_name == "FOOTBALLERS" and sheet_type == "products":
-            # Первый набор характеристик (например, "Назва_Характеристики" без суффикса)
-            # уже обработан основным циклом маппинга, так как он есть в column_mapping.json
-            # и будет помещен в целевые поля "Назва_Характеристики", "Значення_Характеристики" и т.д. (слот _1).
+            current_char_slot_index = 2
 
-            # Теперь ищем характеристики с суффиксами ".1", ".2" и т.д. в исходных данных (row_dict)
-            # и размещаем их в целевые слоты _2, _3 и т.д. (в row_data).
-            current_char_slot_index = 2  # Начинаем заполнять со второго слота характеристик в целевой таблице
-
-            for i in range(1, 24):  # Проверяем исходные характеристики с суффиксом от ".1" до ".23"
-                # Это позволит заполнить целевые слоты от _2 до _24
-
-                # Формируем имена столбцов в исходных данных (как их переименовывает pandas при чтении дубликатов)
+            for i in range(1, 24):
                 source_name_key = f"Назва_Характеристики.{i}"
                 source_unit_key = f"Одиниця_виміру_Характеристики.{i}"
                 source_value_key = f"Значення_Характеристики.{i}"
 
-                # Формируем имена целевых столбцов в row_data
                 target_name_col = f"Назва_Характеристики_{current_char_slot_index}"
                 target_unit_col = f"Одиниця_виміру_Характеристики_{current_char_slot_index}"
                 target_value_col = f"Значення_Характеристики_{current_char_slot_index}"
 
-                # Проверяем, существует ли столбец с названием характеристики в исходных данных (row_dict) и не пустой ли он
                 if source_name_key in row_dict and pd.notna(row_dict[source_name_key]) and str(
                         row_dict[source_name_key]).strip() != '':
-                    # Убедимся, что не выходим за пределы 24 слотов для характеристик в целевой таблице
                     if current_char_slot_index <= 24:
                         row_data[target_name_col] = str(row_dict[source_name_key])
 
                         if source_value_key in row_dict and pd.notna(row_dict[source_value_key]):
                             row_data[target_value_col] = str(row_dict[source_value_key])
                         else:
-                            row_data[target_value_col] = ''  # Явно устанавливаем пустое значение, если нет данных
+                            row_data[target_value_col] = ''
 
                         if source_unit_key in row_dict and pd.notna(row_dict[source_unit_key]):
                             row_data[target_unit_col] = str(row_dict[source_unit_key])
                         else:
-                            row_data[target_unit_col] = ''  # Явно устанавливаем пустое значение, если нет данных
+                            row_data[target_unit_col] = ''
 
-                        current_char_slot_index += 1  # Переходим к следующему слоту в целевой таблице
+                        current_char_slot_index += 1
                     else:
-                        # Достигнут лимит слотов характеристик в целевой таблице
                         logger.warning(
-                            f"Достигнут лимит в 24 характеристики для товара {row_dict.get('Код_товару', '')} от FOOTBALLERS. Последующие характеристики не будут добавлены.")
+                            f"Достигнут лимит в 24 характеристики для товара {row_dict.get('Код_товару', '')} от FOOTBALLERS.")
                         break
                 else:
-                    # Если очередной столбец Назва_Характеристики.i не найден или пуст,
-                    # предполагаем, что больше характеристик для данного товара у поставщика нет.
                     break
 
-        # Установка значений по умолчанию и других полей для продуктов
+        # Значения по умолчанию для продуктов
         if sheet_type == "products":
             if not row_data['Валюта']:
                 row_data['Валюта'] = 'UAH'
             if not row_data['Одиниця_виміру']:
                 row_data['Одиниця_виміру'] = 'шт.'
 
-            # Обработка поля "Наявність" из исходных данных, если оно есть в row_dict (уже обработано основным циклом, если есть в маппинге)
-            # Если поле "available" есть в row_dict, но не в маппинге, и нужно его учесть:
-            if 'available' in row_dict and not row_data['Наявність']:  # Если 'Наявність' еще не заполнено
+            if 'available' in row_dict and not row_data['Наявність']:
                 available_value = str(row_dict['available']).lower().strip()
                 if available_value in ['true', '+', '1', 'yes', 'да', 'в наличии', 'є в наявності']:
                     row_data['Наявність'] = '+'
                 elif available_value in ['false', '-', '0', 'no', 'нет', 'немає в наявності']:
                     row_data['Наявність'] = '-'
-                # Если другие значения, оставляем пустым или как есть, если уже заполнено
 
-            # Обновление поля "Наявність" на основе поля "Кількість" если "Наявність" все еще не определено
             if not row_data['Наявність'] and 'Кількість' in row_data and row_data['Кількість'] != '':
                 try:
-                    quantity = int(
-                        float(str(row_data['Кількість']).replace(',', '.')))  # Преобразуем количество в число
+                    quantity = int(float(str(row_data['Кількість']).replace(',', '.')))
                     if quantity > 0:
                         row_data['Наявність'] = '+'
                     else:
@@ -1111,32 +1121,204 @@ def validate_dataframe(df, sheet_type):
             logger.warning(f"Column '{col}' has very long values (max length: {max_len})")
 
         if df[col].dtype == 'object':
-            unusual_chars = df[col].astype(str).str.contains('[^\\w\\s.,;:()\\[\\]{}"\'<>?!@#$%^&*+=\\-/\\\\\\\\]',
-                                                             regex=True)
+            unusual_chars = df[col].astype(str).str.contains(
+                r'[^\w\s.,;:()\[\]{}"\'<>?!@#$%^&*+=\-/\\]', regex=True)
             if unusual_chars.any():
                 unusual_count = unusual_chars.sum()
                 logger.warning(f"Column '{col}' has {unusual_count} cells with unusual characters")
 
-            # Check for duplicate column names (would cause issues with pandas)
-        if len(df.columns) != len(set(df.columns)):
-            logger.warning("DataFrame has duplicate column names!")
-            for col in df.columns:
-                if list(df.columns).count(col) > 1:
-                    logger.warning(f"Column '{col}' appears multiple times")
+    if len(df.columns) != len(set(df.columns)):
+        logger.warning("DataFrame has duplicate column names!")
+        for col in df.columns:
+            if list(df.columns).count(col) > 1:
+                logger.warning(f"Column '{col}' appears multiple times")
 
-        # logger.info(f"Validation complete for {sheet_type} DataFrame")
     return True
 
+
+# --- ДОБАВЛЕНА АДАПТИРОВАННАЯ ФУНКЦИЯ apply_price_discount ---
+def apply_price_discount(gsheets, spreadsheet_id, sheet_name='Export Products Sheet'):
+    """
+    Функция пересчета цен и скидок, адаптированная под googleapiclient.
+    Использует внутренние методы GoogleSheetsManager (включая ожидание и ретраи),
+    считывает финальный лист после записи и применяет нужные патчи.
+    """
+    logger.info(f"--- ЗАПУСК ОБРАБОТКИ ЦЕН/СКИДОК для листа '{sheet_name}' ---")
+    try:
+        # 1. Читаем все данные целевого листа
+        gsheets._wait_if_needed()
+        result = gsheets._execute_with_retry(
+            gsheets.service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_name,
+                valueRenderOption='FORMATTED_VALUE'
+            )
+        )
+
+        values = result.get('values', [])
+        if not values or len(values) < 2:
+            logger.warning(f"Лист '{sheet_name}' пуст или не содержит данных. Обработка цен/скидок пропущена.")
+            return
+
+        headers = [str(h).strip() for h in values[0]]
+
+        def find_column_index(headers_list, col_name):
+            try:
+                return headers_list.index(col_name)
+            except ValueError:
+                return -1
+
+        price_idx = find_column_index(headers, 'Ціна')
+        price_from_idx = find_column_index(headers, 'Ціна_від')
+        discount_idx = find_column_index(headers, 'Знижка')
+
+        if price_idx == -1 or price_from_idx == -1:
+            logger.warning(f"Столбцы 'Ціна' и/или 'Ціна_від' не найдены на листе. Обработка пропущена.")
+            return
+
+        # Локальная функция для преобразования индекса колонки в буквы (A, B, C...)
+        def get_column_letter(col_idx):
+            letter = ''
+            n = col_idx + 1
+            while n > 0:
+                n, rem = divmod(n - 1, 26)
+                letter = chr(65 + rem) + letter
+            return letter
+
+        def parse_price(val):
+            val = re.sub(r'\s+', '', val)
+            val = val.replace(',', '.')
+            return float(val)
+
+        price_updates = []
+        rows_updated = 0
+
+        # 2. Идем по строкам и считаем скидки
+        for row_idx_0based, row in enumerate(values[1:]):
+            row_num = row_idx_0based + 2  # +1 за заголовок, +1 так как нумерация строк в Google начинается с 1
+
+            # Дополняем строку пустыми значениями, если она обрывается до нужных индексов
+            if len(row) < len(headers):
+                row.extend([''] * (len(headers) - len(row)))
+
+            current_price = row[price_idx].strip()
+            current_price_from = row[price_from_idx].strip()
+            current_discount = row[discount_idx].strip() if discount_idx != -1 else ''
+
+            if not current_price:
+                continue
+
+            # По умолчанию (если скидки нет или отменена)
+            val_price = current_price
+            val_price_from = current_price
+            discount_str = ""
+
+            # Проверяем, есть ли цена со скидкой
+            if current_price_from:
+                try:
+                    p_base = parse_price(current_price)
+                    p_from = parse_price(current_price_from)
+
+                    if p_base != p_from:
+                        if p_base > p_from:
+                            val_price = current_price
+                            val_price_from = current_price_from
+                            discount = p_base - p_from
+                        else:
+                            val_price = current_price_from
+                            val_price_from = current_price
+                            discount = p_from - p_base
+
+                        discount_str = str(round(discount, 2))
+                        if discount_str.endswith('.0'):
+                            discount_str = discount_str[:-2]
+                except ValueError:
+                    # Если попался текст вроде "Немає в наявності", игнорируем ошибку конвертации
+                    continue
+
+            needs_update = False
+
+            # Сравниваем расчетные значения с текущими на листе
+            if current_price != val_price:
+                col_letter = get_column_letter(price_idx)
+                price_updates.append({
+                    'range': f"{sheet_name}!{col_letter}{row_num}",
+                    'values': [[val_price]]
+                })
+                needs_update = True
+
+            if current_price_from != val_price_from:
+                col_letter = get_column_letter(price_from_idx)
+                price_updates.append({
+                    'range': f"{sheet_name}!{col_letter}{row_num}",
+                    'values': [[val_price_from]]
+                })
+                needs_update = True
+
+            if discount_idx != -1 and current_discount != discount_str:
+                col_letter = get_column_letter(discount_idx)
+                price_updates.append({
+                    'range': f"{sheet_name}!{col_letter}{row_num}",
+                    'values': [[discount_str]]
+                })
+                needs_update = True
+
+            if needs_update:
+                rows_updated += 1
+
+        logger.info(f"Найдено {rows_updated} товаров, требующих обновления цен/скидок. "
+                    f"Подготовлено {len(price_updates)} операций обновления ячеек.")
+
+        if not price_updates:
+            logger.info("Нет операций для обновления цен/скидок. Данные актуальны.")
+            logger.info(f"--- Обработка цен/скидок для листа '{sheet_name}' завершена ---")
+            return
+
+        # 3. Отправляем батчи
+        PRICE_CHUNK_SIZE = 10000
+        total_ops = len(price_updates)
+        total_chunks = (total_ops + PRICE_CHUNK_SIZE - 1) // PRICE_CHUNK_SIZE
+        logger.info(
+            f"Отправка обновлений цен/скидок: {total_ops} операций, {total_chunks} чанков по {PRICE_CHUNK_SIZE}...")
+
+        for chunk_idx in range(total_chunks):
+            chunk_start = chunk_idx * PRICE_CHUNK_SIZE
+            chunk_end = min(chunk_start + PRICE_CHUNK_SIZE, total_ops)
+            chunk_data = price_updates[chunk_start:chunk_end]
+
+            logger.info(f"  Цены: чанк {chunk_idx + 1}/{total_chunks}, операции {chunk_start + 1}-{chunk_end}...")
+
+            gsheets._wait_if_needed()
+            gsheets._execute_with_retry(
+                gsheets.service.spreadsheets().values().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={
+                        'valueInputOption': 'USER_ENTERED',
+                        'data': chunk_data
+                    }
+                )
+            )
+
+            if chunk_idx < total_chunks - 1:
+                time.sleep(1)
+
+        logger.info(f"Обработка цен/скидок завершена успешно: {rows_updated} строк, {total_ops} операций.")
+
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка в apply_price_discount: {e}", exc_info=True)
+
+    logger.info(f"--- Обработка цен/скидок для листа '{sheet_name}' завершена ---")
+
+
+# -------------------------------------------------------------
 
 def main():
     try:
         logger.info("=== Начало работы скрипта ===")
 
-        # Инициализация
         gsheets = GoogleSheetsManager()
         mapping = load_mapping()
 
-        # Сбор данных от всех поставщиков
         all_products = []
         all_groups = []
 
@@ -1148,7 +1330,6 @@ def main():
                 products_df = supplier_data["products"]
                 logger.info(f"Получено продуктов от {supplier_name}: {len(products_df)}")
 
-                # Валидация данных перед добавлением
                 if validate_dataframe(products_df, "products"):
                     all_products.append(products_df)
                 else:
@@ -1158,14 +1339,12 @@ def main():
                 groups_df = supplier_data["groups"]
                 logger.info(f"Получено групп от {supplier_name}: {len(groups_df)}")
 
-                # Валидация данных перед добавлением
                 if validate_dataframe(groups_df, "groups"):
                     groups_with_source = groups_df.assign(Джерело_даних=supplier_name)
                     all_groups.append(groups_with_source)
                 else:
                     logger.error(f"Ошибка валидации данных групп для {supplier_name}")
 
-        # Объединение данных
         products_cols, groups_cols = get_template_columns()
 
         merged_products = pd.concat(all_products, ignore_index=True) if all_products \
@@ -1176,7 +1355,6 @@ def main():
         logger.info(f"Объединено продуктов: {len(merged_products)}")
         logger.info(f"Объединено групп: {len(merged_groups)}")
 
-        # Проверка наличия обязательных столбцов
         required_product_columns = ["Код_товару", "Ідентифікатор_товару", "Назва_позиції", "Ціна", "Наявність"]
         for column in required_product_columns:
             if column not in merged_products.columns:
@@ -1189,7 +1367,6 @@ def main():
                 logger.error(f"В объединенных группах отсутствует обязательный столбец: {column}")
                 raise ValueError(f"Отсутствует обязательный столбец: {column}")
 
-        # Запись результатов
         logger.info("Запись данных продуктов...")
         success, error = gsheets.write_sheet_data(
             CONFIG["OUTPUT_SPREADSHEET_ID"],
@@ -1208,11 +1385,13 @@ def main():
         if not success:
             raise Exception(f"Ошибка записи групп: {error}")
 
-        # --- НОВЫЙ КОД: Проверка и добавление пустых строк ---
+        # --- ВНЕДРЕННАЯ ФУНКЦИЯ ВЫЗЫВАЕТСЯ ЗДЕСЬ ---
+        apply_price_discount(gsheets, CONFIG["OUTPUT_SPREADSHEET_ID"], "Export Products Sheet")
+        # -------------------------------------------
+
         logger.info("Проверка и обеспечение минимума пустых строк (1000)...")
         gsheets._ensure_min_empty_rows("Export Products Sheet", 1000)
         gsheets._ensure_min_empty_rows("Export Groups Sheet", 1000)
-        # --- КОНЕЦ НОВОГО КОДА ---
 
         logger.info("=== Скрипт успешно завершен ===")
 
