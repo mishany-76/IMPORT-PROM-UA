@@ -913,11 +913,22 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "1CGgGZH90m7Pa7AB9RgchF-4uxyeAF88VuZlKzW4FkgQ"  # Replace with your actual spreadsheet ID
+    # 1. Прячем ID таблицы
+    SPREADSHEET_ID = os.environ.get("PARS_BAGSROOM_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
 
-    FEEDS = [
-        "https://bagsroom.com.ua/products_feed.xml?hash_tag=563bd97fafe7796a43338c2d4543a11d&sales_notes=&product_ids=&label_ids=&exclude_fields=&html_description=1&yandex_cpa=&process_presence_sure=&languages=uk%2Cru&extra_fields=quantityInStock%2Ckeywords&group_ids=",
-        # Add more feed URLs as needed
-    ]
+    # 2. Прячем ссылку на фид
+    bagsroom_url = os.environ.get("BAGSROOM_FEED_URL")
+
+    if bagsroom_url:
+        # Если секрет найден, подставляем его в список
+        FEEDS = [bagsroom_url]
+        logger.info("URL поставщика BAGSROOM успешно получен из секретов.")
+    else:
+        # Если секрета нет (запуск на компе), используем эту ссылку
+        FEEDS = [
+            "https://bagsroom.com.ua/products_feed.xml?"
+        ]
+        logger.warning("Предупреждение: Ссылка BAGSROOM не найдена в секретах, используем локальное значение.")
+
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
