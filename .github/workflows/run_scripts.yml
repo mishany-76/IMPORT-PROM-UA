@@ -45,6 +45,7 @@ jobs:
           AGER_USER_AGENT: ${{ secrets.AGER_USER_AGENT }}
           SUBSCRIBERS_SERVICES_SPREADSHEET_ID: ${{ secrets.SUBSCRIBERS_SERVICES_SPREADSHEET_ID }}
           SUBSCRIBERS_SERVICES_URL: ${{ secrets.SUBSCRIBERS_SERVICES_URL }}
+          PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           
           # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
           # KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
