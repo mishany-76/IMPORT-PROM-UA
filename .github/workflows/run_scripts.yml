@@ -43,9 +43,21 @@ jobs:
           # Секреты для парсеров (они передаются внутрь через окружение)
           AGER_FEED_URL: ${{ secrets.AGER_FEED_URL }}
           AGER_USER_AGENT: ${{ secrets.AGER_USER_AGENT }}
+          BAGSROOM_FEED_URL: ${{ secrets.BAGSROOM_FEED_URL }}
+          FOOTBALLERS_FEED_URL: ${{ secrets.FOOTBALLERS_FEED_URL }}
+          IZIDROP_FEED_URL: ${{ secrets.IZIDROP_FEED_URL }}
+          KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
+          MOYDROP_FEED_URL: ${{ secrets.MOYDROP_FEED_URL }}
           SUBSCRIBERS_SERVICES_SPREADSHEET_ID: ${{ secrets.SUBSCRIBERS_SERVICES_SPREADSHEET_ID }}
           SUBSCRIBERS_SERVICES_URL: ${{ secrets.SUBSCRIBERS_SERVICES_URL }}
           PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_BAGSROOM_SPREADSHEET_ID: ${{ secrets.PARS_BAGSROOM_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_FOOTBALLERS_SPREADSHEET_ID: ${{ secrets.PARS_FOOTBALLERS_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_IZIDROP_SPREADSHEET_ID: ${{ secrets.PARS_IZIDROP_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_KIRS_SPREADSHEET_ID: ${{ secrets.PARS_KIRS_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_MOYDROP_SPREADSHEET_ID: ${{ secrets.PARS_MOYDROP_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          
           
           # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
           # KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
