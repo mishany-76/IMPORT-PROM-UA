@@ -885,7 +885,7 @@ if __name__ == "__main__":
     SPREADSHEET_ID = os.environ.get("PARS_IZIDROP_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
 
     # 2. Прячем ссылку на фид
-    bagsroom_url = os.environ.get("IZIDROP_FEED_URL")
+    izidrop_url = os.environ.get("IZIDROP_FEED_URL")
 
     if izidrop_url:
         # Если секрет найден, подставляем его в список
