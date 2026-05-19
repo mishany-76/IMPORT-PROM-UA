@@ -874,12 +874,22 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs"  # Replace with your actual spreadsheet ID
+    # 1. Прячем ID таблицы
+    SPREADSHEET_ID = os.environ.get("PARS_MOYDROP_SPREADSHEET_ID", "10PRDnJY5MUCBp_9ltnbFaqR8UYk3Vs")
 
-    FEEDS = [
-        "https://backend.mydrop.com.ua/vendor/api/export/products/prom/yml?public_api_key=642ec819edca6b961e7ca268f646fc12c081d755&price_field=drop_price&increase_price_type=percent&increase_price_value=35&param_name=%D0%A0%D0%B0%D0%B7%D0%BC%D0%B5%D1%80&stock_sync=true&only_available=true&category_id=68072,68074,80847,93016,93017",
-        # Add more feed URLs as needed
-    ]
+    # 2. Прячем ссылку на фид
+    moydrop_url = os.environ.get("MOYDROP_FEED_URL")
+
+    if moydrop_url:
+        # Если секрет найден, подставляем его в список
+        FEEDS = [moydrop_url]
+        logger.info("URL поставщика MOYDROP успешно получен из секретов.")
+    else:
+        # Если секрета нет (запуск на компе), используем эту ссылку
+        FEEDS = [
+            "https://backend.mydrop.com.ua/vendor/api/export/products/prom/yml?"
+        ]
+        logger.warning("Предупреждение: Ссылка MOYDROP не найдена в секретах, используем локальное значение.")
 
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
