@@ -50,12 +50,12 @@ jobs:
           MOYDROP_FEED_URL: ${{ secrets.MOYDROP_FEED_URL }}
           SUBSCRIBERS_SERVICES_SPREADSHEET_ID: ${{ secrets.SUBSCRIBERS_SERVICES_SPREADSHEET_ID }}
           SUBSCRIBERS_SERVICES_URL: ${{ secrets.SUBSCRIBERS_SERVICES_URL }}
-          PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
-          PARS_BAGSROOM_SPREADSHEET_ID: ${{ secrets.PARS_BAGSROOM_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
-          PARS_FOOTBALLERS_SPREADSHEET_ID: ${{ secrets.PARS_FOOTBALLERS_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
-          PARS_IZIDROP_SPREADSHEET_ID: ${{ secrets.PARS_IZIDROP_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
-          PARS_KIRS_SPREADSHEET_ID: ${{ secrets.PARS_KIRS_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
-          PARS_MOYDROP_SPREADSHEET_ID: ${{ secrets.PARS_MOYDROP_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}
+          PARS_BAGSROOM_SPREADSHEET_ID: ${{ secrets.PARS_BAGSROOM_SPREADSHEET_ID }}
+          PARS_FOOTBALLERS_SPREADSHEET_ID: ${{ secrets.PARS_FOOTBALLERS_SPREADSHEET_ID }}
+          PARS_IZIDROP_SPREADSHEET_ID: ${{ secrets.PARS_IZIDROP_SPREADSHEET_ID }}
+          PARS_KIRS_SPREADSHEET_ID: ${{ secrets.PARS_KIRS_SPREADSHEET_ID }}
+          PARS_MOYDROP_SPREADSHEET_ID: ${{ secrets.PARS_MOYDROP_SPREADSHEET_ID }}
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           
           
