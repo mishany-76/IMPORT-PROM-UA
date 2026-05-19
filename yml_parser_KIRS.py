@@ -926,7 +926,7 @@ if __name__ == "__main__":
     else:
         # Если секрета нет (запуск на компе), используем эту ссылку
         FEEDS = [
-            "https://kirs.com.ua/products_feed.xml?hash_tag=07e04e4fa3b2ccaf3c6e2af399980298&sales_notes=&product_ids=&label_ids=&exclude_fields=&html_description=0&yandex_cpa=&process_presence_sure=&languages=uk%2Cru&extra_fields=&group_ids=2812263%2C14628441%2C21050128%2C21509203%2C25276002%2C768"
+            "https://kirs.com.ua/products_feed.xml?"
         ]
         logger.warning("Предупреждение: Ссылка KIRS не найдена в секретах, используем локальное значение.")
 
