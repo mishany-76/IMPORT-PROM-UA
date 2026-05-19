@@ -930,7 +930,8 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "1ls3HlH3cs3f-7GwBbnp7I7tYLxt9p-F80MmrUjsyk6M"
+    # Получаем ID таблицы из секретов (переменных окружения)
+    SPREADSHEET_ID = os.environ.get("PARS_AGER_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
 
     # Пробуем взять ссылку из секретов GitHub, если её нет — используем пустой список или тестовую ссылку
     ager_url = os.environ.get("AGER_FEED_URL")
