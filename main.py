@@ -5,6 +5,7 @@ import requests
 import logging
 import pandas as pd
 import subprocess
+import gspread  # ДОБАВЛЕНО: для работы с Google Sheets через сервисный аккаунт
 
 # Изменен импорт для совместимости с разными версиями
 try:
@@ -14,7 +15,15 @@ except ImportError:
 from datetime import datetime, timedelta
 
 # ==================== КОНФИГУРАЦИЯ ====================
-SPREADSHEET_KEY = "1p_Tb8LOEFA5V9PqVsUpzUJdDnGDICQgmjMWQdssROVk"  # Ключ таблицы
+# Ключ таблицы теперь берется из секретов GitHub (или используется старый как запасной)
+SPREADSHEET_KEY = os.environ.get("SUBSCRIBERS_SERVICES_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОДПИСКИ")
+
+# Ссылка для скачивания (используется как резервная, если нет сервисного аккаунта)
+SUBSCRIBERS_SERVICES_URL = os.environ.get(
+    "SUBSCRIBERS_SERVICES_URL", 
+    f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_KEY}/gviz/tq?tqx=out:csv&sheet=Users"
+)
+
 TARGET_COLUMN = "Import_Subscribers"  # Название столбца для поиска email
 # Словарь: скрипт → пауза в секундах ПОСЛЕ его выполнения (перед следующим скриптом).
 # Большая пауза перед import_script_0.py достигается через паузу после yml_parser_AGER.py (последний парсер).
@@ -134,12 +143,24 @@ def check_subscription():
     user_email = check_user_file()
     logging.info(f"Email для проверки: {user_email}")
 
-    spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_KEY}/gviz/tq?tqx=out:csv&sheet=Users"
-
     try:
-        response = safe_api_request(spreadsheet_url)
-        csv_data = StringIO(response.text)
-        df = pd.read_csv(csv_data)
+        # ПРОВЕРКА АВТОРИЗАЦИИ: если есть сервисный аккаунт (GitHub Actions или локально с файлом)
+        if os.path.exists("key_sheet.json"):
+            logging.info("Найден файл key_sheet.json. Авторизация через сервисный аккаунт...")
+            gc = gspread.service_account(filename="key_sheet.json")
+            sh = gc.open_by_key(SPREADSHEET_KEY)
+            worksheet = sh.worksheet("Users") # лист "Users", как было в старой ссылке
+            
+            # Получаем все данные из листа и преобразуем в DataFrame (сохраняем оригинальную логику обработки)
+            records = worksheet.get_all_records()
+            df = pd.DataFrame(records)
+        
+        # РЕЗЕРВНЫЙ ВАРИАНТ: если файла нет (например, локальный запуск без ключа)
+        else:
+            logging.info("Файл key_sheet.json не найден. Используется резервное чтение по ссылке...")
+            response = safe_api_request(SUBSCRIBERS_SERVICES_URL)
+            csv_data = StringIO(response.text)
+            df = pd.read_csv(csv_data)
 
         if TARGET_COLUMN not in df.columns:
             logging.error(f"Столбец {TARGET_COLUMN} не найден в таблице")
@@ -213,7 +234,7 @@ def run_script_with_retries(script_path, retries=3):
 
 def trigger_google_apps_script(url, retries=3):
     """Отправляет запрос для запуска Google Apps Script с повторными попытками."""
-    if not url or url == "ВАШ_URL_GOOGLE_APPS_SCRIPT_ЗДЕСЬ":
+    if not url or url == "ВАШ_URL_GOOGLE_APPS_SCRIPT_ЗДЕСЬ" or url == "ВАШ_GOOGLE_APPS_SCRIPT_URL":
         logging.warning("URL Google Apps Script не настроен. Пропуск запуска.")
         print("URL Google Apps Script не настроен. Пропуск запуска.")
         return False
