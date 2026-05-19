@@ -500,8 +500,11 @@ class FeedProcessor:
 
 
 if __name__ == "__main__":
-    TARGET_SPREADSHEET_ID = "1F1VtMQHMMd_uON81exgVmpOz2xVZNm9aHSVucVBZZW0"
-    SOURCE_SPREADSHEET_ID = "1TEAf66r9tvghYv1PXhZrtFpPacbTJOXCUOenbC971u4"
+    # Получаем ID целевой таблицы (куда копируем)
+    TARGET_SPREADSHEET_ID = os.environ.get("TARGET_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ")
+    
+    # Получаем ID исходной таблицы (откуда копируем)
+    SOURCE_SPREADSHEET_ID = os.environ.get("SOURCE_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
 
     processor = FeedProcessor(
         target_spreadsheet_id=TARGET_SPREADSHEET_ID,
