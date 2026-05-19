@@ -881,11 +881,22 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY"  # Replace with your actual spreadsheet ID
-    FEEDS = [
-        "https://easydrop.one/prom-export?key=24481682017071&pid=00563827103698",
-        # Add more feed URLs as needed
-    ]
+    # 1. Прячем ID таблицы
+    SPREADSHEET_ID = os.environ.get("PARS_IZIDROP_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
+
+    # 2. Прячем ссылку на фид
+    bagsroom_url = os.environ.get("IZIDROP_FEED_URL")
+
+    if izidrop_url:
+        # Если секрет найден, подставляем его в список
+        FEEDS = [izidrop_url]
+        logger.info("URL поставщика IZIDROP успешно получен из секретов.")
+    else:
+        # Если секрета нет (запуск на компе), используем эту ссылку
+        FEEDS = [
+            "https://easydrop.one/prom-export?"
+        ]
+        logger.warning("Предупреждение: Ссылка IZIDROP не найдена в секретах, используем локальное значение.")
 
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
