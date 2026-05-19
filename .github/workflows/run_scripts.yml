@@ -56,6 +56,8 @@ jobs:
           PARS_IZIDROP_SPREADSHEET_ID: ${{ secrets.PARS_IZIDROP_SPREADSHEET_ID }}
           PARS_KIRS_SPREADSHEET_ID: ${{ secrets.PARS_KIRS_SPREADSHEET_ID }}
           PARS_MOYDROP_SPREADSHEET_ID: ${{ secrets.PARS_MOYDROP_SPREADSHEET_ID }}
+          TARGET_SPREADSHEET_ID: ${{ secrets.TARGET_SPREADSHEET_ID }}
+          SOURCE_SPREADSHEET_ID: ${{ secrets.SOURCE_SPREADSHEET_ID }}
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           
           
