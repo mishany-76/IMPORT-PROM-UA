@@ -913,11 +913,22 @@ class FeedProcessor:
 
 if __name__ == "__main__":
     # Configuration
-    SPREADSHEET_ID = "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg"  # Replace with your actual spreadsheet ID
+    # 1. Прячем ID таблицы
+    SPREADSHEET_ID = os.environ.get("PARS_KIRS_SPREADSHEET_ID", "ВАШ_ID_ТАБЛИЦЫ_ПОСТАВЩИКА")
 
-    FEEDS = [
-        "https://kirs.com.ua/products_feed.xml?hash_tag=07e04e4fa3b2ccaf3c6e2af399980298&sales_notes=&product_ids=&label_ids=&exclude_fields=&html_description=0&yandex_cpa=&process_presence_sure=&languages=uk%2Cru&extra_fields=&group_ids=2812263%2C14628441%2C21050128%2C21509203%2C25276002%2C76824950%2C97968928%2C102220419%2C107622359&nested_group_ids=14628441%2C21050128%2C21509203%2C25276002%2C76824950%2C97968928%2C107622359",
-        # Add more feed URLs as needed
-    ]
+    # 2. Прячем ссылку на фид
+    kirs_url = os.environ.get("KIRS_FEED_URL")
+
+    if kirs_url:
+        # Если секрет найден, подставляем его в список
+        FEEDS = [kirs_url]
+        logger.info("URL поставщика KIRS успешно получен из секретов.")
+    else:
+        # Если секрета нет (запуск на компе), используем эту ссылку
+        FEEDS = [
+            "https://kirs.com.ua/products_feed.xml?hash_tag=07e04e4fa3b2ccaf3c6e2af399980298&sales_notes=&product_ids=&label_ids=&exclude_fields=&html_description=0&yandex_cpa=&process_presence_sure=&languages=uk%2Cru&extra_fields=&group_ids=2812263%2C14628441%2C21050128%2C21509203%2C25276002%2C768"
+        ]
+        logger.warning("Предупреждение: Ссылка KIRS не найдена в секретах, используем локальное значение.")
+
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
