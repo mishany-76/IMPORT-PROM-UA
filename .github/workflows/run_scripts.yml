@@ -2,14 +2,12 @@ name: Scheduled Script Runner
 
 on:
   schedule:
-    # Запуск каждый день в 00:00 по UTC (настрой под себя)
-    - cron: '49 6,10,16 * * *'
-  workflow_dispatch: # Позволяет запускать скрипт вручную кнопкой
+    - cron: '49 5,9,16 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # ДОБАВЬ ЭТУ СТРОКУ ЗДЕСЬ:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -36,14 +34,18 @@ jobs:
 
       - name: Execute main script
         env:
-          # Передаем токены в переменные окружения, которые видит main.py
+          # Основные секреты для Диспетчера
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
-          # Добавляем секретную ссылку для AGER
-          AGER_FEED_URL: ${{ secrets.AGER_FEED_URL }}
-          # ДОБАВЬ ЭТУ СТРОКУ:
-          AGER_USER_AGENT: ${{ secrets.AGER_USER_AGENT }}
-          # Вот здесь мы связываем секрет гитхаба с переменной окружения Python
           GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          SUBSCRIBERS_SERVICES_SPREADSHEET_ID: ${{ secrets.SUBSCRIBERS_SERVICES_SPREADSHEET_ID }}
+          
+          # Секреты для парсеров (они передаются внутрь через окружение)
+          AGER_FEED_URL: ${{ secrets.AGER_FEED_URL }}
+          AGER_USER_AGENT: ${{ secrets.AGER_USER_AGENT }}
+          
+          # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
+          # KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
+          
         run: python main.py
