@@ -31,8 +31,8 @@ PUBLIC_URL = f'{R2_PUBLIC_DOMAIN}/{FILE_NAME}'
 # Список токенов для магазинов
 PROM_TOKENS = [
     os.getenv('PROM_TOKEN_City', 'PROM_TOKEN_City'),
-    # os.getenv('PROM_TOKEN_Best', 'PROM_TOKEN_Best'),
-    # os.getenv('PROM_TOKEN_Vaillant', 'PROM_TOKEN_Vaillant'),
+    os.getenv('PROM_TOKEN_Best', 'PROM_TOKEN_Best'),
+    os.getenv('PROM_TOKEN_Vaillant', 'PROM_TOKEN_Vaillant'),
 ]
 
 SPREADSHEET_ID = os.getenv('IMPORT_PROM_UA_SPREADSHEET_ID', 'IMPORT_PROM_UA_SPREADSHEET_ID')
@@ -112,7 +112,7 @@ def trigger_prom_import():
     # Каждая категория (например 'name') охватывает и рус, и укр колонки в твоем файле.
     payload = {
         "url": PUBLIC_URL,
-        "force_update": False,
+        "force_update": True,
         "only_available": True,  # «Завантажити позиції "В наявності"»
         "only_update": True,
         "mark_missing_product_as": "deleted",
@@ -132,7 +132,7 @@ def trigger_prom_import():
             "quantity",  # Кількість
             "group",  # Номер_групи + Назва_групи
             "discount",  # Знижка
-            "notes_private"  # Особисті нотатки
+            "notes"  # Особисті нотатки
         ]
     }
 
