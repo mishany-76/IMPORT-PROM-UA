@@ -48,6 +48,7 @@ jobs:
           IZIDROP_FEED_URL: ${{ secrets.IZIDROP_FEED_URL }}
           KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
           MOYDROP_FEED_URL: ${{ secrets.MOYDROP_FEED_URL }}
+          FOOTBALLERS_FEED_SPREADSHEET_ID: ${{ secrets.FOOTBALLERS_FEED_SPREADSHEET_ID }}
           SUBSCRIBERS_SERVICES_SPREADSHEET_ID: ${{ secrets.SUBSCRIBERS_SERVICES_SPREADSHEET_ID }}
           SUBSCRIBERS_SERVICES_URL: ${{ secrets.SUBSCRIBERS_SERVICES_URL }}
           PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}
@@ -58,8 +59,9 @@ jobs:
           PARS_MOYDROP_SPREADSHEET_ID: ${{ secrets.PARS_MOYDROP_SPREADSHEET_ID }}
           TARGET_SPREADSHEET_ID: ${{ secrets.TARGET_SPREADSHEET_ID }}
           SOURCE_SPREADSHEET_ID: ${{ secrets.SOURCE_SPREADSHEET_ID }}
-          FOOTBALLERS_FEED_SPREADSHEET_ID: ${{ secrets.FOOTBALLERS_FEED_SPREADSHEET_ID }}
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
+          # Секрет ЦЕЛЕВОЙ таблицы (куда всё собирается)
+          IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: ${{ secrets.IMPORT_TEMPLATE_PROM_SPREADSHEET_ID }}
           
           
           # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
