@@ -21,19 +21,17 @@ CONFIG = {
     "SERVICE_ACCOUNT_FILE": "key_sheet.json",
     "MAPPING_FILE": "column_mapping.json",
     "SUPPLIERS": {
-        "AGER": "1ls3HlH3cs3f-7GwBbnp7I7tYLxt9p-F80MmrUjsyk6M",
-        "FOOTBALLERS": "1F1VtMQHMMd_uON81exgVmpOz2xVZNm9aHSVucVBZZW0",
-        "IZIDROP": "101xN35FXrwYYb74NnguQlJ0csYv_L9K4uRzlXo2hBVY",
-        "MOYDROP": "10PRDnJY5MUCpJEZWRmwTHtyMBp_9ltnbFaqR8UYk3Vs",
-        # "SPECULANT": "10GesfoS_QWL_oFFlk-W9HBuOzHIuKd7ylF9h2v-xfMs",
-        "KIRS": "1oMAMDBpr6HXHbvOicAupWTl5c36AZXPNj1-mA_tatzg",
-        "BAGSROOM": "1CGgGZH90m7Pa7AB9RgchF-4uxyeAF88VuZlKzW4FkgQ"
+        "AGER": os.environ.get("PARS_AGER_SPREADSHEET_ID", "PARS_AGER_SPREADSHEET_ID"),
+        "FOOTBALLERS": os.environ.get("PARS_FOOTBALLERS_SPREADSHEET_ID", "PARS_FOOTBALLERS_SPREADSHEET_ID"),
+        "IZIDROP": os.environ.get("PARS_IZIDROP_SPREADSHEET_ID", "PARS_IZIDROP_SPREADSHEET_ID"),
+        "MOYDROP": os.environ.get("PARS_MOYDROP_SPREADSHEET_ID", "PARS_MOYDROP_SPREADSHEET_ID"),
+        "KIRS": os.environ.get("PARS_KIRS_SPREADSHEET_ID", "PARS_KIRS_SPREADSHEET_ID"),
+        "BAGSROOM": os.environ.get("PARS_BAGSROOM_SPREADSHEET_ID", "PARS_BAGSROOM_SPREADSHEET_ID")
     },
-    "OUTPUT_SPREADSHEET_ID": "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA",
+    "OUTPUT_SPREADSHEET_ID": os.environ.get("IMPORT_TEMPLATE_PROM_SPREADSHEET_ID", "IMPORT_TEMPLATE_PROM_SPREADSHEET_ID"),
     "DELAY_BETWEEN_REQUESTS": 2,
     "MAX_RETRIES": 7,
     "BATCH_SIZE": 1000,
-    # Максимум строк в одном batchUpdate (лимит Google Sheets API)
     "DELETE_BATCH_SIZE": 1000,
 }
 
