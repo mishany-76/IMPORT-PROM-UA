@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import time
 from datetime import datetime
+import os  # <--- ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНА
 import re  # ДОБАВЛЕНО: нужно для обработки строк с ценами
 
 # Настройка логирования
