@@ -62,6 +62,7 @@ jobs:
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           # Секрет ЦЕЛЕВОЙ таблицы (куда всё собирается)
           IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: ${{ secrets.IMPORT_TEMPLATE_PROM_SPREADSHEET_ID }}
+          IMPORT_PROM_UA_SPREADSHEET_ID: ${{ secrets.IMPORT_PROM_UA_SPREADSHEET_ID }}
           
           
           # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
