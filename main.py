@@ -215,7 +215,7 @@ def run_script_with_retries(script_path, retries=3):
             if attempt == retries:
                 logging.error(f"Скрипт {script_path} не выполнен после {retries} попыток из-за таймаута.")
                 raise
-            time.sleep(10 * attempt)
+            time.sleep(60 * attempt)
         except subprocess.CalledProcessError as e:
             logging.error(f"Ошибка в скрипте {script_path} (попытка {attempt}/{retries}). Код возврата: {e.returncode}")
             logging.error(f"Stdout: {e.stdout}")
@@ -223,12 +223,12 @@ def run_script_with_retries(script_path, retries=3):
             if attempt == retries:
                 logging.error(f"Скрипт {script_path} не выполнен после {retries} попыток из-за ошибки.")
                 raise
-            time.sleep(5 * attempt)
+            time.sleep(60 * attempt)
         except Exception as e:
             logging.error(f"Неожиданная ошибка при запуске {script_path} (попытка {attempt}/{retries}): {e}")
             if attempt == retries:
                 raise
-            time.sleep(5 * attempt)
+            time.sleep(60 * attempt)
     return None
 
 
