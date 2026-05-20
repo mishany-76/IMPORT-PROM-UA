@@ -4,6 +4,7 @@ import json
 import re
 import logging
 import time
+import os  # ДОБАВЛЕНО: для работы с секретами GitHub
 from googleapiclient.discovery import build  # Импортируем функцию build для создания сервисного клиента
 from gspread.exceptions import WorksheetNotFound, APIError  # Импортируем исключения gspread
 
@@ -11,9 +12,11 @@ from gspread.exceptions import WorksheetNotFound, APIError  # Импортиру
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- КОНФИГУРАЦИЯ ---
-SERVICE_ACCOUNT_FILE = 'key_sheet.json'  # Укажите путь к вашему файлу ключа
-SOURCE_SPREADSHEET_ID = '1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA'  # Замените на ID исходной таблицы
-TARGET_SPREADSHEET_ID = '1o6hic1hfDGfL6yynHjJD0cM8U_QaK_i_TERt19CQvOA'  # Замените на ID целевой таблицы
+SERVICE_ACCOUNT_FILE = 'key_sheet.json'  
+
+# ИСПРАВЛЕНО: Получаем ID из секретов GitHub (вторым параметром оставлены старые ID как запасные)
+SOURCE_SPREADSHEET_ID = os.environ.get('IMPORT_TEMPLATE_PROM_SPREADSHEET_ID', 'IMPORT_TEMPLATE_PROM_SPREADSHEET_ID')
+TARGET_SPREADSHEET_ID = os.environ.get('IMPORT_PROM_UA_SPREADSHEET_ID', 'IMPORT_PROM_UA_SPREADSHEET_ID')
 
 # Базовые названия столбцов характеристик без суффикса, как они ДОЛЖНЫ БЫТЬ в целевой таблице,
 # если в исходнике найдены характеристики. Используется для формирования структуры и маппинга данных.
