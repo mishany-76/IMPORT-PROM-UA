@@ -883,6 +883,7 @@ class FeedProcessor:
                 )
                 logger.info(f"=== Feed processing completed at {end_time} ===")
                 logger.info(f"Total duration: {duration:.2f} seconds")
+                sys.exit(1)   # ← вот эта строка — сигнал для main.py "что-то пошло не так, повтори"
                 return
 
             # Update Google Sheets
