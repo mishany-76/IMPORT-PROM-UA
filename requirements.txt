@@ -6,3 +6,4 @@ google-auth-oauthlib
 pandas
 gspread
 openpyxl
+boto3
