@@ -64,7 +64,15 @@ jobs:
           IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: ${{ secrets.IMPORT_TEMPLATE_PROM_SPREADSHEET_ID }}
           IMPORT_PROM_UA_SPREADSHEET_ID: ${{ secrets.IMPORT_PROM_UA_SPREADSHEET_ID }}
           
-          
+          # === НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ИМПОРТА НА PROM И CLOUDFLARE R2 ===
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_DOMAIN: ${{ secrets.R2_PUBLIC_DOMAIN }}
+          PROM_TOKEN_City: ${{ secrets.PROM_TOKEN_CITY }}
+          PROM_TOKEN_Best: ${{ secrets.PROM_TOKEN_BEST }}
+          PROM_TOKEN_Vaillant: ${{ secrets.PROM_TOKEN_VAILLANT }}
           # Если для других парсеров тоже созданы секреты - добавь их сюда по аналогии:
           # KIRS_FEED_URL: ${{ secrets.KIRS_FEED_URL }}
           
