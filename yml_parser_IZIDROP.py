@@ -888,15 +888,11 @@ if __name__ == "__main__":
     izidrop_url = os.environ.get("IZIDROP_FEED_URL")
 
     if izidrop_url:
-        # Если секрет найден, подставляем его в список
         FEEDS = [izidrop_url]
         logger.info("URL поставщика IZIDROP успешно получен из секретов.")
     else:
-        # Если секрета нет (запуск на компе), используем эту ссылку
-        FEEDS = [
-            "https://easydrop.one/prom-export?"
-        ]
-        logger.warning("Предупреждение: Ссылка IZIDROP не найдена в секретах, используем локальное значение.")
+        FEEDS = ["https://easydrop.one/prom-export?"]
+        logger.warning("Предупреждение: Ссылка IZIDROP не найдена в секретах, используем локальную.")
 
     processor = FeedProcessor(SPREADSHEET_ID, FEEDS)
     processor.run()
