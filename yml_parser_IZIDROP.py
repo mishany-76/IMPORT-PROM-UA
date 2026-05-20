@@ -868,6 +868,23 @@ class FeedProcessor:
         try:
             # Process all feeds
             self.process_all_feeds()
+
+            # ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ:
+            # Если все фиды вернули пустые данные (например, из-за 502/503/таймаута),
+            # обновление таблиц пропускается. Это предотвращает массовое удаление
+            # существующих товаров и групп при временной недоступности поставщика.
+            if not self.categories and not self.products:
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
+                logger.error(
+                    "ЗАЩИТА ДАННЫХ: Все фиды вернули 0 категорий и 0 товаров. "
+                    "Скорее всего, поставщик временно недоступен. "
+                    "Обновление и удаление данных в таблицах ПРОПУЩЕНО для сохранения текущих данных."
+                )
+                logger.info(f"=== Feed processing completed at {end_time} ===")
+                logger.info(f"Total duration: {duration:.2f} seconds")
+                return
+
             # Update Google Sheets
             self.update_sheets()
             end_time = datetime.now()
