@@ -32,10 +32,10 @@ SCRIPTS_TO_RUN = {
     #"yml_parser_SPECULANT.py": 60,
     #"yml_parser_KIRS.py": 60,  # пауза 60 сек после
     #"yml_parser_MOYDROP.py": 60,  # пауза 60 сек после
-    "yml_parser_IZIDROP.py": 60,  # пауза 60 сек после
+    #"yml_parser_IZIDROP.py": 60,  # пауза 60 сек после
     #"yml_parser_BAGSROOM.py": 60,  # пауза 60 сек после
     #"yml_parser_AGER.py": 70,  # пауза 120 сек после — даём Google API отдохнуть перед import_script_0.py
-    #"import_script_0.py": 90,  # пауза 90 сек после
+    "import_script_0.py": 90,  # пауза 90 сек после
     #"IMPORT_PROM_UA.py": 60,  # пауза 60 сек после
     #"Product_Correction.py": 0,  # последний скрипт, пауза не нужна
 }
