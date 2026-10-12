@@ -38,7 +38,7 @@ SCRIPTS_TO_RUN = {
     "import_script_0.py": 90,  # пауза 90 сек после
     "IMPORT_PROM_UA.py": 60,  # пауза 60 сек после
     "Product_Correction.py": 30,  # последний скрипт, пауза не нужна
-    "API_imports_on_prom.ua.py": 10,  # пауза 60 сек после
+    #"API_imports_on_prom.ua.py": 10,  # ОТКЛЮЧЕНО ДЛЯ ТЕСТА: не трогаем боевые магазины Prom.ua
 }
 LOG_FILE_TO_CHECK = "feed_processor.log"  # Лог-файл для проверки
 MAX_LOG_LINES = 200  # Максимальное количество строк в логе

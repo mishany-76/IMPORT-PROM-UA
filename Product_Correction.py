@@ -1,9 +1,10 @@
+import os
 import gspread
 
 # ----------------------------------------------------
-# Настройки: замените значения на свои
+# Настройки: получаем ID из переменной окружения
 # ----------------------------------------------------
-SPREADSHEET_ID = '1o6hic1hfDGfL6yynHjJD0cM8U_QaK_i_TERt19CQvOA'
+SPREADSHEET_ID = os.environ.get('IMPORT_PROM_UA_SPREADSHEET_ID', '1WKlCqKReIp7ZByP6O8ctmjJ3Nm7eFsrcVv77y-9XKd4')
 WORKSHEET_NAME = 'Export Products Sheet'
 CREDENTIALS_FILE = 'key_sheet.json'
 
