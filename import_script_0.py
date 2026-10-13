@@ -243,20 +243,43 @@ class GoogleSheetsManager:
             total_existing_rows = len(key_col_values)  # временно, уточняется в Шаге 6
 
             # ── Шаг 4: определяем критические индексы ─────────────────────────
+            col_idx_to_df_col = {}
             if is_groups:
                 critical_fields = ["Назва_групи", "Назва_групи_укр", "Ідентифікатор_групи"]
+                for f in critical_fields:
+                    if f in headers and f in df.columns:
+                        idx = headers.index(f)
+                        col_idx_to_df_col[idx] = f
             else:
-                critical_fields = [
+                base_critical_fields = [
                     "Назва_позиції", "Назва_позиції_укр", "Опис", "Опис_укр",
                     "Наявність", "Ціна", "Ціна_від", "Кількість", "Знижка",
                     "Ярлик", "Де_знаходиться_товар", "Тип_товару",
                 ]
-                for _i in range(1, 25):
-                    critical_fields.append("Назва_Характеристики" if _i == 1 else f"Назва_Характеристики_{_i}")
-                    critical_fields.append(
-                        "Одиниця_виміру_Характеристики" if _i == 1 else f"Одиниця_виміру_Характеристики_{_i}")
-                    critical_fields.append("Значення_Характеристики" if _i == 1 else f"Значення_Характеристики_{_i}")
-            critical_indices = [headers.index(f) for f in critical_fields if f in headers]
+                for f in base_critical_fields:
+                    if f in headers and f in df.columns:
+                        idx = headers.index(f)
+                        col_idx_to_df_col[idx] = f
+
+                # Для характеристик сопоставляем каждый слот 1..24 по реальным позициям колонок листа
+                for _slot in range(1, 25):
+                    name_df_col = "Назва_Характеристики" if _slot == 1 else f"Назва_Характеристики_{_slot}"
+                    unit_df_col = "Одиниця_виміру_Характеристики" if _slot == 1 else f"Одиниця_виміру_Характеристики_{_slot}"
+                    val_df_col = "Значення_Характеристики" if _slot == 1 else f"Значення_Характеристики_{_slot}"
+
+                    # В заголовках листа слоты идут тройками начиная с 51
+                    sheet_name_idx = 51 + (_slot - 1) * 3
+                    sheet_unit_idx = 52 + (_slot - 1) * 3
+                    sheet_val_idx = 53 + (_slot - 1) * 3
+
+                    if sheet_name_idx < len(headers) and name_df_col in df.columns:
+                        col_idx_to_df_col[sheet_name_idx] = name_df_col
+                    if sheet_unit_idx < len(headers) and unit_df_col in df.columns:
+                        col_idx_to_df_col[sheet_unit_idx] = unit_df_col
+                    if sheet_val_idx < len(headers) and val_df_col in df.columns:
+                        col_idx_to_df_col[sheet_val_idx] = val_df_col
+
+            critical_indices = sorted(col_idx_to_df_col.keys())
 
             # ── Шаг 5: читаем только критические столбцы чанками ─────────────
             #    Вместо загрузки всего листа (20к строк × 127 колонок) читаем
@@ -344,7 +367,7 @@ class GoogleSheetsManager:
                     # Собираем только изменившиеся ячейки
                     cell_updates = []
                     for col_idx in critical_indices:
-                        col_name = headers[col_idx]
+                        col_name = col_idx_to_df_col.get(col_idx, headers[col_idx] if col_idx < len(headers) else '')
                         new_value = str(row[col_name]) if col_name in row and pd.notna(row.get(col_name)) else ''
                         old_value = existing_row_cells.get(col_idx, '')
                         if new_value != old_value:
