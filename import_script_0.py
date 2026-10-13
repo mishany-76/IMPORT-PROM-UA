@@ -941,18 +941,24 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
         # Словарь нормализации/перевода характеристик на украинский язык
         UKR_PARAM_NAMES = {
             "Размер": "Розмір",
+            "Розмір": "Розмір",
             "Размер женской обуви": "Розмір жіночого взуття",
             "Размер мужской обуви": "Розмір чоловічого взуття",
             "Сезон": "Сезон",
             "Материал верха": "Матеріал верху",
+            "Материал": "Матеріал",
+            "Матеріал": "Матеріал",
             "Цвет": "Колір",
+            "Колір": "Колір",
             "Группа цвета": "Група кольору",
             "Материал подкладки": "Матеріал підкладки",
             "Материал подошвы": "Матеріал підошви",
             "Материал стельки": "Матеріал устілки",
             "Пол": "Стать",
+            "Стать": "Стать",
             "Бренд": "Бренд",
             "Производитель": "Виробник",
+            "Виробник": "Виробник",
             "Застежка": "Застібка",
             "Стиль": "Стиль",
             "Состояние": "Стан",
@@ -973,7 +979,18 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
             "Высота голенища/задника": "Висота халяви/задника",
             "Мембрана": "Мембрана",
             "Узоры и принты": "Візерунки і принти",
-            "Форма мыска/носка": "Форма миска/носка"
+            "Форма мыска/носка": "Форма миска/носка",
+            # Дополнительные параметры для сумок (KIRS / BAGSROOM) и аксессуаров
+            "Тип сумки": "Тип сумки",
+            "Форма": "Форма",
+            "Жесткость": "Жорсткість",
+            "Отделения": "Відділення",
+            "Ручки": "Ручки",
+            "Плечевой ремень": "Плечовий ремінь",
+            "Длина": "Довжина",
+            "Ширина": "Ширина",
+            "Высота": "Висота",
+            "Толщина": "Товщина"
         }
 
         # Приоритет главных фильтров Prom.ua для первых слотов
@@ -983,6 +1000,7 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
             "Розмір чоловічого взуття",
             "Сезон",
             "Матеріал верху",
+            "Матеріал",
             "Колір",
             "Група кольору",
             "Матеріал підкладки",
@@ -992,9 +1010,14 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
             "Бренд",
             "Виробник",
             "Стиль",
-            "Склад"
+            "Склад",
+            "Тип сумки",
+            "Форма",
+            "Жорсткість",
+            "Застібка"
         ]
 
+        handled_param_cols = set()
         for supplier_col, target_col in supplier_mapping.items():
             if supplier_col not in row_dict:
                 continue
@@ -1004,6 +1027,7 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
                 continue
 
             if isinstance(target_col, list) and supplier_col.startswith("param_"):
+                handled_param_cols.add(supplier_col)
                 char_name = target_col[2] if len(target_col) > 2 else supplier_col.replace("param_", "")
                 # Переводим на украинский язык
                 char_name_ukr = UKR_PARAM_NAMES.get(char_name, UKR_PARAM_NAMES.get(supplier_col.replace("param_", ""), char_name))
@@ -1017,6 +1041,18 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
                     if str_value.startswith("'") and not str_value.startswith("''"):
                         str_value = str_value[1:]
                     row_data[target_col] = str_value
+
+        # Универсальный динамический сбор всех несмаппленных параметров (param_*)
+        for k, v in row_dict.items():
+            if k.startswith("param_") and k not in handled_param_cols:
+                if pd.isna(v) or v == '':
+                    continue
+                raw_name = k.replace("param_", "").strip()
+                ukr_name = UKR_PARAM_NAMES.get(raw_name, raw_name)
+                str_val = str(v)
+                if str_val.startswith("'") and not str_val.startswith("''"):
+                    str_val = str_val[1:]
+                collected_params.append((ukr_name, str_val))
 
         # Сортируем собранные характеристики по приоритету Prom.ua
         def get_param_priority(item):
