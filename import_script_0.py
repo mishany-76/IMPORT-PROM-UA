@@ -912,6 +912,66 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
         # Для FOOTBALLERS идентификаторы маппятся через основной цикл (column_mapping.json)
 
         # Основной цикл маппинга на основе column_mapping.json
+        # 1) Сначала собираем характеристики в структурированный список
+        collected_params = []
+        
+        # Словарь нормализации/перевода характеристик на украинский язык
+        UKR_PARAM_NAMES = {
+            "Размер": "Розмір",
+            "Размер женской обуви": "Розмір жіночого взуття",
+            "Размер мужской обуви": "Розмір чоловічого взуття",
+            "Сезон": "Сезон",
+            "Материал верха": "Матеріал верху",
+            "Цвет": "Колір",
+            "Группа цвета": "Група кольору",
+            "Материал подкладки": "Матеріал підкладки",
+            "Материал подошвы": "Матеріал підошви",
+            "Материал стельки": "Матеріал устілки",
+            "Пол": "Стать",
+            "Бренд": "Бренд",
+            "Производитель": "Виробник",
+            "Застежка": "Застібка",
+            "Стиль": "Стиль",
+            "Состояние": "Стан",
+            "Состав": "Склад",
+            "Размерная группа": "Розмірна група",
+            "Страна производитель": "Країна-виробник",
+            "Страна регистрации бренда": "Країна реєстрації бренду",
+            "Страна-производитель товара": "Країна-виробник товару",
+            "Особенности модели": "Особливості моделі",
+            "Декорирование": "Декорування",
+            "Тип ткани": "Тип тканини",
+            "Событие": "Подія",
+            "Ценовой сегмент": "Ціновий сегмент",
+            "Материал наполнителя": "Матеріал наповнювача",
+            "Комментарий к замерам": "Коментар до вимірів",
+            "Вид обуви": "Вид взуття",
+            "Каблук/Подошва": "Каблук/Підошва",
+            "Высота голенища/задника": "Висота халяви/задника",
+            "Мембрана": "Мембрана",
+            "Узоры и принты": "Візерунки і принти",
+            "Форма мыска/носка": "Форма миска/носка"
+        }
+
+        # Приоритет главных фильтров Prom.ua для первых слотов
+        PRIORITY_PARAMS = [
+            "Розмір",
+            "Розмір жіночого взуття",
+            "Розмір чоловічого взуття",
+            "Сезон",
+            "Матеріал верху",
+            "Колір",
+            "Група кольору",
+            "Матеріал підкладки",
+            "Матеріал підошви",
+            "Матеріал устілки",
+            "Стать",
+            "Бренд",
+            "Виробник",
+            "Стиль",
+            "Склад"
+        ]
+
         for supplier_col, target_col in supplier_mapping.items():
             if supplier_col not in row_dict:
                 continue
@@ -921,25 +981,39 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
                 continue
 
             if isinstance(target_col, list) and supplier_col.startswith("param_"):
-                char_name = target_col[2]
-
-                for idx in range(1, 25):
-                    name_col_target = f"Назва_Характеристики_{idx}" if idx > 1 else "Назва_Характеристики"
-                    value_col_target = f"Значення_Характеристики_{idx}" if idx > 1 else "Значення_Характеристики"
-
-                    if not row_data[name_col_target]:
-                        row_data[name_col_target] = char_name
-                        str_value = str(value)
-                        if str_value.startswith("'") and not str_value.startswith("''"):
-                            str_value = str_value[1:]
-                        row_data[value_col_target] = str_value
-                        break
+                char_name = target_col[2] if len(target_col) > 2 else supplier_col.replace("param_", "")
+                # Переводим на украинский язык
+                char_name_ukr = UKR_PARAM_NAMES.get(char_name, UKR_PARAM_NAMES.get(supplier_col.replace("param_", ""), char_name))
+                str_value = str(value)
+                if str_value.startswith("'") and not str_value.startswith("''"):
+                    str_value = str_value[1:]
+                collected_params.append((char_name_ukr, str_value))
             else:
                 if target_col in row_data:
                     str_value = str(value)
                     if str_value.startswith("'") and not str_value.startswith("''"):
                         str_value = str_value[1:]
                     row_data[target_col] = str_value
+
+        # Сортируем собранные характеристики по приоритету Prom.ua
+        def get_param_priority(item):
+            name = item[0]
+            if name in PRIORITY_PARAMS:
+                return PRIORITY_PARAMS.index(name)
+            return len(PRIORITY_PARAMS) + 100
+
+        collected_params.sort(key=get_param_priority)
+
+        # Раскладываем по слотам 1..24
+        slot_idx = 1
+        for char_name, char_val in collected_params:
+            if slot_idx > 24:
+                break
+            name_col_target = f"Назва_Характеристики_{slot_idx}" if slot_idx > 1 else "Назва_Характеристики"
+            value_col_target = f"Значення_Характеристики_{slot_idx}" if slot_idx > 1 else "Значення_Характеристики"
+            row_data[name_col_target] = char_name
+            row_data[value_col_target] = char_val
+            slot_idx += 1
 
         # Специальная обработка повторяющихся характеристик FOOTBALLERS
         if supplier_name == "FOOTBALLERS" and sheet_type == "products":
