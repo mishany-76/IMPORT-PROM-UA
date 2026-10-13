@@ -28,17 +28,18 @@ TARGET_COLUMN = "Import_Subscribers"  # Название столбца для �
 # Словарь: скрипт → пауза в секундах ПОСЛЕ его выполнения (перед следующим скриптом).
 # Большая пауза перед import_script_0.py достигается через паузу после yml_parser_AGER.py (последний парсер).
 SCRIPTS_TO_RUN = {
-    "yml_parser_FOOTBALLERS.py": 60,  # пауза 60 сек после
+    # ПАРСЕРЫ ВРЕМЕННО ОТКЛЮЧЕНЫ ДЛЯ ТЕСТИРОВАНИЯ (данные уже в таблицах поставщиков):
+    #"yml_parser_FOOTBALLERS.py": 60,
     #"yml_parser_SPECULANT.py": 60,
-    #"yml_parser_KIRS.py": 60,  # пауза 60 сек после
-    "yml_parser_MOYDROP.py": 60,  # пауза 60 сек после
-    "yml_parser_IZIDROP.py": 60,  # пауза 60 сек после
-    "yml_parser_BAGSROOM.py": 60,  # пауза 60 сек после
-    "yml_parser_AGER.py": 70,  # пауза 120 сек после — даём Google API отдохнуть перед import_script_0.py
-    "import_script_0.py": 90,  # пауза 90 сек после
-    "IMPORT_PROM_UA.py": 60,  # пауза 60 сек после
-    "Product_Correction.py": 30,  # последний скрипт, пауза не нужна
-    #"API_imports_on_prom.ua.py": 10,  # ОТКЛЮЧЕНО ДЛЯ ТЕСТА: не трогаем боевые магазины Prom.ua
+    #"yml_parser_KIRS.py": 60,
+    #"yml_parser_MOYDROP.py": 60,
+    #"yml_parser_IZIDROP.py": 60,
+    #"yml_parser_BAGSROOM.py": 60,
+    #"yml_parser_AGER.py": 70,
+    "import_script_0.py": 30,
+    "IMPORT_PROM_UA.py": 30,
+    "Product_Correction.py": 10,
+    #"API_imports_on_prom.ua.py": 10,
 }
 LOG_FILE_TO_CHECK = "feed_processor.log"  # Лог-файл для проверки
 MAX_LOG_LINES = 200  # Максимальное количество строк в логе
