@@ -1156,16 +1156,16 @@ def transform_supplier_data(supplier_df, supplier_name, sheet_type, mapping):
 
         # Специальная обработка повторяющихся характеристик FOOTBALLERS
         if supplier_name == "FOOTBALLERS" and sheet_type == "products":
-            current_char_slot_index = 2
+            current_char_slot_index = 1
 
             for i in range(1, 24):
                 source_name_key = f"Назва_Характеристики.{i}"
                 source_unit_key = f"Одиниця_виміру_Характеристики.{i}"
                 source_value_key = f"Значення_Характеристики.{i}"
 
-                target_name_col = f"Назва_Характеристики_{current_char_slot_index}"
-                target_unit_col = f"Одиниця_виміру_Характеристики_{current_char_slot_index}"
-                target_value_col = f"Значення_Характеристики_{current_char_slot_index}"
+                target_name_col = f"Назва_Характеристики_{current_char_slot_index}" if current_char_slot_index > 1 else "Назва_Характеристики"
+                target_unit_col = f"Одиниця_виміру_Характеристики_{current_char_slot_index}" if current_char_slot_index > 1 else "Одиниця_виміру_Характеристики"
+                target_value_col = f"Значення_Характеристики_{current_char_slot_index}" if current_char_slot_index > 1 else "Значення_Характеристики"
 
                 if source_name_key in row_dict and pd.notna(row_dict[source_name_key]) and str(
                         row_dict[source_name_key]).strip() != '':

@@ -628,7 +628,7 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
 
                 if source_sheet_title != 'Export Groups Sheet':
                     if label_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_label_value = 'Топ продаж'
+                        new_label_value = 'Топ продажів'
                         if target_row_data[label_col_target_idx] != new_label_value:
                             target_col_letter = get_column_letter(label_col_target_idx)
                             cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
@@ -683,7 +683,7 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
 
                 if source_sheet_title != 'Export Groups Sheet':
                     if label_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
-                        new_row[label_col_target_idx] = 'Топ продаж'
+                        new_row[label_col_target_idx] = 'Топ продажів'
 
                     if location_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
                         location_map = {
