@@ -61,7 +61,7 @@ jobs:
           SOURCE_SPREADSHEET_ID: ${{ secrets.SOURCE_SPREADSHEET_ID }}
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           # Секрет ЦЕЛЕВОЙ таблицы (куда всё собирается)
-          IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: "1LiVnXt5S0FwSnew1Lq0tfzmRhPhMspMAxXKbKLxOInc"
+          IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA"
           IMPORT_PROM_UA_SPREADSHEET_ID: "1WKlCqKReIp7ZByP6O8ctmjJ3Nm7eFsrcVv77y-9XKd4"
           
           # === НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ИМПОРТА НА PROM И CLOUDFLARE R2 ===

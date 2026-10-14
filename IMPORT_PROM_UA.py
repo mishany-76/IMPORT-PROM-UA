@@ -565,6 +565,16 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
         location_col_target_idx = find_column_index(updated_target_headers, 'Де_знаходиться_товар')
         type_col_target_idx = find_column_index(updated_target_headers, 'Тип_товару')
 
+        # Индексы обязательных полей для подстановки fallback (UA -> RU)
+        name_ru_target_idx = find_column_index(updated_target_headers, 'Назва_позиції')
+        name_ua_target_idx = find_column_index(updated_target_headers, 'Назва_позиції_укр')
+        desc_ru_target_idx = find_column_index(updated_target_headers, 'Опис')
+        desc_ua_target_idx = find_column_index(updated_target_headers, 'Опис_укр')
+
+        # Индексы поисковых запросов для очистки в Легком Эшелоне
+        kw_ru_target_idx = find_column_index(updated_target_headers, 'Пошукові_запити')
+        kw_ua_target_idx = find_column_index(updated_target_headers, 'Пошукові_запити_укр')
+
         if supplier_col_source_idx == -1:
             logging.warning(
                 "Столбец 'Особисті_нотатки' не найден в исходной таблице. Функции 'Ярлик', 'Де_знаходиться_товар' и 'Тип_товару' не будут работать корректно.")
@@ -665,6 +675,47 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
                                 'values': [[new_type_value]]
                             })
 
+                    # Fallback для обязательных полей Prom (если русское пустое -> копируем украинское)
+                    if name_ru_target_idx != -1 and name_ua_target_idx != -1:
+                        ru_val = target_row_data[name_ru_target_idx] if name_ru_target_idx < len(target_row_data) else ''
+                        ua_val = target_row_data[name_ua_target_idx] if name_ua_target_idx < len(target_row_data) else ''
+                        if not ru_val.strip() and ua_val.strip():
+                            target_col_letter = get_column_letter(name_ru_target_idx)
+                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                            update_operations_batch_format.append({
+                                'range': cell_range_a1,
+                                'values': [[ua_val]]
+                            })
+
+                    if desc_ru_target_idx != -1 and desc_ua_target_idx != -1:
+                        ru_val = target_row_data[desc_ru_target_idx] if desc_ru_target_idx < len(target_row_data) else ''
+                        ua_val = target_row_data[desc_ua_target_idx] if desc_ua_target_idx < len(target_row_data) else ''
+                        if not ru_val.strip() and ua_val.strip():
+                            target_col_letter = get_column_letter(desc_ru_target_idx)
+                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                            update_operations_batch_format.append({
+                                'range': cell_range_a1,
+                                'values': [[ua_val]]
+                            })
+
+                    # Очистка поисковых запросов в легком эшелоне (если там что-то осталось)
+                    if kw_ru_target_idx != -1 and kw_ru_target_idx < len(target_row_data):
+                        if target_row_data[kw_ru_target_idx].strip():
+                            target_col_letter = get_column_letter(kw_ru_target_idx)
+                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                            update_operations_batch_format.append({
+                                'range': cell_range_a1,
+                                'values': [['']]
+                            })
+                    if kw_ua_target_idx != -1 and kw_ua_target_idx < len(target_row_data):
+                        if target_row_data[kw_ua_target_idx].strip():
+                            target_col_letter = get_column_letter(kw_ua_target_idx)
+                            cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                            update_operations_batch_format.append({
+                                'range': cell_range_a1,
+                                'values': [['']]
+                            })
+
 
             else:
                 new_row = [''] * required_cols_len_target
@@ -698,6 +749,21 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
 
                     if type_col_target_idx != -1 and current_supplier != 'FOOTBALLERS':
                         new_row[type_col_target_idx] = 'r'
+
+                    # Fallback для обязательных полей Prom (если русское пустое -> копируем украинское)
+                    if name_ru_target_idx != -1 and name_ua_target_idx != -1:
+                        if not new_row[name_ru_target_idx].strip() and new_row[name_ua_target_idx].strip():
+                            new_row[name_ru_target_idx] = new_row[name_ua_target_idx]
+
+                    if desc_ru_target_idx != -1 and desc_ua_target_idx != -1:
+                        if not new_row[desc_ru_target_idx].strip() and new_row[desc_ua_target_idx].strip():
+                            new_row[desc_ru_target_idx] = new_row[desc_ua_target_idx]
+
+                    # Очистка поисковых запросов в легком эшелоне
+                    if kw_ru_target_idx != -1 and kw_ru_target_idx < len(new_row):
+                        new_row[kw_ru_target_idx] = ''
+                    if kw_ua_target_idx != -1 and kw_ua_target_idx < len(new_row):
+                        new_row[kw_ua_target_idx] = ''
 
                 new_rows_to_add_data.append(new_row)
 
