@@ -4,44 +4,41 @@ import gzip
 import boto3
 import requests
 import json
-import time  # ДОБАВЛЕНО: модуль для создания пауз
+import time
 from openpyxl import load_workbook
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- НАСТРОЙКИ ---
-# Подгружаем данные из переменных окружения (для GitHub Actions)
-# или берем дефолтные значения для локальной проверки
+# --- НАСТРОЙКИ ДЛЯ ЭШЕЛОНА 2 (ТЯЖЕЛАЯ ТАБЛИЦА) ---
+# Подгружаем данные из переменных окружения
 R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY', 'R2_ACCESS_KEY')
 R2_SECRET_KEY = os.getenv('R2_SECRET_KEY', 'R2_SECRET_KEY')
 R2_ACCOUNT_ID = os.getenv('R2_ACCOUNT_ID', 'R2_ACCOUNT_ID')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME', 'R2_BUCKET_NAME')
 R2_ENDPOINT = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
-# Домен, который привязан к бакету (Custom Domain или r2.dev)
 R2_PUBLIC_DOMAIN = os.getenv('R2_PUBLIC_DOMAIN', 'R2_PUBLIC_DOMAIN')
 
-# ДОБАВЛЕНО: Настройки пауз в секундах
 DELAY_BEFORE_FIRST = int(os.getenv('DELAY_BEFORE_FIRST', 10))
 DELAY_BETWEEN_REQUESTS = int(os.getenv('DELAY_BETWEEN_REQUESTS', 20))
 
-FILE_NAME = 'import_data.xlsx.gz'
+# Имя файла на Cloudflare R2 для тяжелого каталога магазина VaillantVibe
+FILE_NAME = 'import_data_heavy_vaillant.xlsx.gz'
 PUBLIC_URL = f'{R2_PUBLIC_DOMAIN}/{FILE_NAME}'
 
-# Список токенов для магазинов
+# Токены магазинов: в этой ветке отправляем ТОЛЬКО в VaillantVibe
 PROM_TOKENS = [
-    os.getenv('PROM_TOKEN_City', 'PROM_TOKEN_City'),
-    os.getenv('PROM_TOKEN_Best', 'PROM_TOKEN_Best'),
     os.getenv('PROM_TOKEN_Vaillant', 'PROM_TOKEN_Vaillant'),
 ]
 
-SPREADSHEET_ID = os.getenv('IMPORT_PROM_UA_SPREADSHEET_ID', 'IMPORT_PROM_UA_SPREADSHEET_ID')
+# ID Тяжелой таблицы-контент-банка (Эшелон 2)
+SPREADSHEET_ID = os.getenv('IMPORT_PROM_UA_HEAVY_SPREADSHEET_ID', '1Rkbne3OmHOC3vZtvnuvW_eINL1dBIKdNI7sYkMxATmM')
 SERVICE_ACCOUNT_FILE = 'key_sheet.json'
 
 
 def get_gspread_xlsx():
-    """Скачивает Google таблицу в формате XLSX в память"""
-    print("1. Авторизация в Google и скачивание XLSX...")
+    """Скачивает тяжелую Google таблицу в формате XLSX в память"""
+    print(f"1. Авторизация в Google и скачивание XLSX (Таблица ID: {SPREADSHEET_ID})...")
     creds = Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
         scopes=['https://www.googleapis.com/auth/drive.readonly']
@@ -63,7 +60,7 @@ def get_gspread_xlsx():
 
 def process_xlsx(xlsx_content):
     """Удаляет лист 'Systemic' и сжимает в Gzip"""
-    print("2. Обработка файла: удаление листа 'Systemic'...")
+    print("2. Обработка файла: удаление служебного листа 'Systemic'...")
     wb = load_workbook(io.BytesIO(xlsx_content))
 
     if "Systemic" in wb.sheetnames:
@@ -84,7 +81,7 @@ def process_xlsx(xlsx_content):
 
 def upload_to_r2(data):
     """Загрузка файла в Cloudflare R2"""
-    print(f"4. Загрузка в Cloudflare R2 (Бакет: {R2_BUCKET_NAME})...")
+    print(f"4. Загрузка в Cloudflare R2 (Бакет: {R2_BUCKET_NAME}, Файл: {FILE_NAME})...")
     s3 = boto3.client(
         's3',
         endpoint_url=R2_ENDPOINT,
@@ -98,69 +95,60 @@ def upload_to_r2(data):
         Key=FILE_NAME,
         Body=data,
         ContentType='application/x-gzip',
-        ACL='public-read'  # Если бакет требует явного указания, иначе настраивается в панели R2
+        ACL='public-read'
     )
     print(f"   Файл доступен по ссылке: {PUBLIC_URL}")
 
 
 def trigger_prom_import():
-    """Запуск импорта с полным маппингом твоих заголовков"""
+    """Запуск импорта контента в VaillantVibe по строго утвержденному стандарту Эшелона 2"""
     print("5. Запуск импорта через Prom API...")
     import_url = "https://my.prom.ua/api/v1/products/import_url"
 
-    # Мы перечисляем категории полей.
-    # Каждая категория (например 'name') охватывает и рус, и укр колонки в твоем файле.
+    # ЖЕСТКИЙ СТАНДАРТ ЭШЕЛОНА 2 ИЗ ВТОРОГО МОЗГА:
+    # only_update = True, mark_missing_product_as = 'none'
+    # Обновляем только SEO-запросы, названия и описания
     payload = {
         "url": PUBLIC_URL,
         "force_update": True,
-        "only_available": True,  # «Завантажити позиції "В наявності"»
+        "only_available": False,
         "only_update": True,
-        "mark_missing_product_as": "deleted",
+        "mark_missing_product_as": "none",
         "updated_fields": [
-            "name",  # Назва_позиції + Назва_позиції_укр
-            "name_ua",
-            "description",  # Опис + Опис_укр
-            "description_ua",
-            "keywords",  # Пошукові_запити + Пошукові_запити_укр
+            "keywords",
             "keywords_ua",
-            "sku",  # Код_товару
-            "price",  # Ціна + Оптова_ціна
-            "old_price",
-            "images",  # Посилання_зображення
-            "photo",  # (Дублируем для надежности под UI)
-            "presence",  # Наявність
-            "quantity",  # Кількість
-            "group",  # Номер_групи + Назва_групи
-            "discount",  # Знижка
-            "notes"  # Особисті нотатки
+            "name",
+            "name_ua",
+            "description",
+            "description_ua"
         ]
     }
 
-    is_first = True  # ДОБАВЛЕНО: Флаг для проверки первого запроса
+    is_first = True
 
     for token in PROM_TOKENS:
-        if not token or token == 'токен_1': continue
+        if not token or token == 'токен_1' or token == 'PROM_TOKEN_Vaillant':
+            continue
 
-        # ДОБАВЛЕНО: Логика создания пауз
         if is_first:
-            print(f"   Ожидание {DELAY_BEFORE_FIRST} сек. перед загрузкой первого магазина...")
+            print(f"   Ожидание {DELAY_BEFORE_FIRST} сек. перед отправкой...")
             time.sleep(DELAY_BEFORE_FIRST)
             is_first = False
         else:
-            print(f"   Ожидание {DELAY_BETWEEN_REQUESTS} сек. перед загрузкой следующего магазина...")
+            print(f"   Ожидание {DELAY_BETWEEN_REQUESTS} сек. перед следующим запросом...")
             time.sleep(DELAY_BETWEEN_REQUESTS)
 
         headers = {
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json',
-            'X-Language': 'uk'  # ГОВОРИМ ПРОМУ, ЧТО МЫ ПРИШЛИ С УКРАИНСКИМ КОНТЕКСТОМ
+            'X-Language': 'uk'
         }
 
         try:
             response = requests.post(import_url, json=payload, headers=headers)
             if response.status_code == 200:
                 data = response.json()
-                print(f"   [OK] Магазин {token[:10]}... Импорт запущен. ID: {data.get('id')}")
+                print(f"   [OK] Магазин VaillantVibe ({token[:10]}...). Импорт запущен. ID: {data.get('id')}")
             else:
                 print(f"   [Error] {token[:10]}: {response.status_code} - {response.text}")
         except Exception as e:
@@ -169,11 +157,10 @@ def trigger_prom_import():
 
 if __name__ == "__main__":
     try:
-        # Логика "на лету"
         raw_xlsx = get_gspread_xlsx()
         gzipped_xlsx = process_xlsx(raw_xlsx)
         upload_to_r2(gzipped_xlsx)
         trigger_prom_import()
-        print("\nГотово! Все процессы завершены.")
+        print("\nГотово! Тяжелый архив отправлен в Prom API для VaillantVibe.")
     except Exception as e:
         print(f"\nКритическая ошибка: {e}")
