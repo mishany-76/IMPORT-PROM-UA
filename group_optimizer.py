@@ -69,18 +69,18 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
 
     def classify(row):
         supp = str(row.get('Особисті_нотатки', '')).strip().upper()
-        name = str(row.get('Назва_позиції', '')).lower() + ' ' + str(row.get('Назва_позиції_укр', '')).lower()
+        name = (str(row.get('Назва_позиції', '')) + ' ' + str(row.get('Назва_позиції_укр', ''))).lower()
         old_grp = str(row.get('Назва_групи', '')).lower()
         text = f"{name} {old_grp}"
 
-        # Логистический суффикс
-        if supp == 'AGER':
+        # Логистический суффикс: ТОЛЬКО AGER доставляет Укрпочтой
+        if supp == 'AGER' or 'ager' in str(row.get('Джерело_даних', '')).lower():
             logistics_suffix = "(Нова Пошта / Укрпошта)"
         else:
             logistics_suffix = "(Тільки Нова Пошта)"
 
-        # Специфика поставщика FOOTBALLERS
-        if supp == 'FOOTBALLERS' or 'бутс' in text or 'м\'яч' in text or 'гетр' in text or 'щитк' in text:
+        # 1. Специфика поставщика FOOTBALLERS
+        if supp == 'FOOTBALLERS' or any(k in text for k in ['бутс', "м'яч", 'мяч', 'гетр', 'щитк', 'футзал', 'копочк']):
             l1 = "Футбольне та спортивне екіпірування"
             for pat, l2_name, _ in L2_RULES:
                 if re.search(pat, text):
@@ -91,7 +91,7 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
             l3 = f"{l2} {logistics_suffix}"
             return l1, l2, l3
 
-        # Определение L2 и базового L1
+        # 2. Определение L2 и L1 по правилам
         target_l1 = None
         target_l2 = None
         for pat, l2_name, l1_cand in L2_RULES:
@@ -100,19 +100,41 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
                 target_l1 = l1_cand
                 break
 
+        # 3. Приоритетный Fallback для обуви и сумок (предотвращает ложное попадание в Одяг)
         if not target_l2:
-            if any(k in text for k in ['сумк', 'рюкзак', 'гаманець', 'пояс']):
-                target_l1 = "Сумки, рюкзаки та аксесуари"
-                target_l2 = "Аксесуари та шкіргалантерея"
-            elif any(k in text for k in ['взутт', 'крос', 'туфл', 'ботинк', 'сапог', 'слан']):
+            # Обувной поиск: кроссовки, кеды, сникеры, туфли, ботинки, сапоги, слайды, сандалии
+            if any(k in text for k in ['взутт', 'обув', 'крос', 'кед', 'сникер', 'sneaker', 'ботинк', 'туфл', 'сапог', 'слан', 'шлеп', 'сандал', 'босоніж', 'тапоч', 'лофер', 'мокасин', 'угг', 'черевик']):
                 target_l1 = "Взуття"
-                target_l2 = "Взуття (інше)"
+                if any(k in text for k in ['крос', 'кед', 'сникер', 'sneaker']):
+                    target_l2 = "Кросівки та кеди"
+                elif any(k in text for k in ['ботинк', 'черевик', 'берц']):
+                    target_l2 = "Черевики та ботильйони"
+                elif any(k in text for k in ['чобот', 'сапог', 'угг']):
+                    target_l2 = "Чоботи та напівчоботи"
+                elif any(k in text for k in ['туфл', 'лофер', 'мокасин']):
+                    target_l2 = "Туфлі та мокасини"
+                elif any(k in text for k in ['босоніж', 'сандал', 'слан', 'шлеп']):
+                    target_l2 = "Босоніжки та сандалі"
+                else:
+                    target_l2 = "Взуття (інше)"
+            # Галантерея и сумки
+            elif any(k in text for k in ['сумк', 'рюкзак', 'гаманець', 'пояс', 'ремень', 'бананка', 'клатч', 'шопер', 'мессенджер']):
+                target_l1 = "Сумки, рюкзаки та аксесуари"
+                if any(k in text for k in ['рюкзак', 'ранец']):
+                    target_l2 = "Рюкзаки та ранці"
+                elif any(k in text for k in ['гаманець', 'кошелек', 'портмоне']):
+                    target_l2 = "Гаманці та портмоне"
+                elif any(k in text for k in ['ремень', 'ремін', 'пояс']):
+                    target_l2 = "Ремені та пояси"
+                else:
+                    target_l2 = "Сумки та клатчі"
             else:
+                # Если это действительно одежда
                 target_l1 = "Одяг"
                 target_l2 = "Повсякденний одяг"
 
         # Уточнение пола для категории 'Одяг'
-        if target_l1 == 'Одяг':
+        if target_l1 == "Одяг":
             is_men = any(k in text for k in ['чоловіч', 'мужск', 'для чоловіків', 'для мужчин', 'хлопч'])
             is_women = any(k in text for k in ['жіноч', 'женск', 'для жінок', 'для женщин', 'дівчат'])
             if is_men and not is_women:
@@ -120,10 +142,7 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
             elif is_women and not is_men:
                 target_l1 = "Жіночий одяг"
             else:
-                if any(k in text for k in ['плать', 'сукн', 'блуз', 'спідниц', 'юбк', 'сарафан', 'купальник']):
-                    target_l1 = "Жіночий одяг"
-                else:
-                    target_l1 = "Жіночий одяг" # Дефолт для неоднозначной одежды
+                target_l1 = "Жіночий одяг"
 
         l3 = f"{target_l2} {logistics_suffix}"
         return target_l1, target_l2, l3
