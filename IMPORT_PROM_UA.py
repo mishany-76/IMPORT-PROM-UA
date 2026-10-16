@@ -572,6 +572,15 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
         supplier_col_source_idx = find_column_index(source_headers, 'Особисті_нотатки')
         quantity_col_source_idx = find_column_index(source_headers, 'Кількість')
 
+        # Индексы колонок групп для гарантированного обновления при переклассификации каталога
+        group_id_source_idx = find_column_index(source_headers, 'Номер_групи')
+        group_name_source_idx = find_column_index(source_headers, 'Назва_групи')
+        group_ident_source_idx = find_column_index(source_headers, 'Ідентифікатор_групи')
+
+        group_cols_source_indices = {
+            idx for idx in [group_id_source_idx, group_name_source_idx, group_ident_source_idx] if idx != -1
+        }
+
         label_col_target_idx = find_column_index(updated_target_headers, 'Ярлик')
         location_col_target_idx = find_column_index(updated_target_headers, 'Де_знаходиться_товар')
         type_col_target_idx = find_column_index(updated_target_headers, 'Тип_товару')
@@ -631,6 +640,15 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
                                     source_value = '!'
 
                             if source_col_index == quantity_col_source_idx:
+                                if source_value != target_row_data[target_col_index_0based]:
+                                    target_col_letter = get_column_letter(target_col_index_0based)
+                                    cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"
+                                    update_operations_batch_format.append({
+                                        'range': cell_range_a1,
+                                        'values': [[source_value]]
+                                    })
+                            elif source_col_index in group_cols_source_indices:
+                                # Принудительно перезаписываем группы даже если в целевой стояло старое значение
                                 if source_value != target_row_data[target_col_index_0based]:
                                     target_col_letter = get_column_letter(target_col_index_0based)
                                     cell_range_a1 = f"{source_sheet_title}!{target_col_letter}{target_row_number_1based}"

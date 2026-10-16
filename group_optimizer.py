@@ -169,10 +169,17 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
     merged_products_df['Назва_групи'] = new_group_names
 
     # Собираем чистое дерево групп для листа Export Groups Sheet
+    # ВАЖНО: берем ТОЛЬКО те группы, в которых физически есть реальные товары
+    active_l3_tuples = set(zip(l1_list, l2_list, l3_list))
+    active_l2_tuples = set((c_l1, c_l2) for c_l1, c_l2, _ in active_l3_tuples)
+    active_l1_names = set(c_l1 for c_l1, _ in active_l2_tuples)
+
     groups_rows = []
 
-    # Уровень 1
+    # Уровень 1 (только с товарами)
     for name, gid in l1_ids.items():
+        if name not in active_l1_names:
+            continue
         row = {c: '' for c in groups_cols}
         row['Номер_групи'] = gid
         row['Ідентифікатор_групи'] = gid
@@ -182,8 +189,10 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
         row['Ідентифікатор_батьківської_групи'] = ''
         groups_rows.append(row)
 
-    # Уровень 2
+    # Уровень 2 (только с товарами)
     for (p_l1, name), gid in l2_ids.items():
+        if (p_l1, name) not in active_l2_tuples:
+            continue
         row = {c: '' for c in groups_cols}
         row['Номер_групи'] = gid
         row['Ідентифікатор_групи'] = gid
@@ -194,8 +203,10 @@ def normalize_catalog_structure(merged_products_df, groups_cols):
         row['Ідентифікатор_батьківської_групи'] = p_id
         groups_rows.append(row)
 
-    # Уровень 3
+    # Уровень 3 (только с товарами)
     for (p_l1, p_l2, name), gid in l3_ids.items():
+        if (p_l1, p_l2, name) not in active_l3_tuples:
+            continue
         row = {c: '' for c in groups_cols}
         row['Номер_групи'] = gid
         row['Ідентифікатор_групи'] = gid
