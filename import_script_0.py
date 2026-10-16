@@ -1545,8 +1545,13 @@ def main():
 
         merged_products = pd.concat(all_products, ignore_index=True) if all_products \
             else pd.DataFrame(columns=products_cols)
-        merged_groups = pd.concat(all_groups, ignore_index=True) if all_groups \
-            else pd.DataFrame(columns=groups_cols)
+
+        # === НОРМАЛИЗАЦИЯ КАТАЛОГА ДО 3 УРОВНЕЙ И ЛОГИСТИКИ (УКРПОШТА / НОВА ПОШТА) ===
+        from group_optimizer import normalize_catalog_structure
+        logger.info("Применение нормализации каталога до 3 уровней с разделением по логистике...")
+        merged_products, merged_groups = normalize_catalog_structure(merged_products, groups_cols)
+        logger.info(f"Каталог нормализован! Сформировано чистое дерево групп: {len(merged_groups)} категорий.")
+        # ==================================================================================
 
         logger.info(f"Объединено продуктов: {len(merged_products)}")
         logger.info(f"Объединено групп: {len(merged_groups)}")
