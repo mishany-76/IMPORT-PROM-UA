@@ -404,6 +404,17 @@ def synchronize_single_sheet_with_data(gspread_client, sheets_service, source_sh
         # Получаем или создаем целевой лист с тем же именем через gspread_client
         target_sheet = get_sheet_by_name(target_spreadsheet, source_sheet_title)
 
+        # Если это лист Export Groups Sheet — перезаписываем его целиком из исходника
+        if source_sheet_title == 'Export Groups Sheet':
+            logging.info("Лист 'Export Groups Sheet': применение прямой полной перезаписи дерева групп...")
+            source_all = source_sheet.get_all_values()
+            if source_all:
+                target_sheet.clear()
+                target_sheet.update(range_name='A1', values=source_all)
+                logging.info(f"Лист 'Export Groups Sheet' успешно полностью перезаписан ({len(source_all)} строк)!")
+            logging.info(f"--- Синхронизация для листа '{source_sheet_title}' завершена (полная перезапись) ---")
+            return
+
         # --- Чтение и анализ заголовков ---
         logging.info(f"Чтение заголовков исходного листа '{source_sheet_title}'...")
         source_headers = get_headers(source_sheet)
