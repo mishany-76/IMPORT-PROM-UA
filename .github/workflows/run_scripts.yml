@@ -61,7 +61,7 @@ jobs:
           SOURCE_SPREADSHEET_ID: ${{ secrets.SOURCE_SPREADSHEET_ID }}
           #PARS_AGER_SPREADSHEET_ID: ${{ secrets.PARS_AGER_SPREADSHEET_ID }}  <-- ДОБАВИТЬ ЭТУ СТРОКУ
           # Секрет ЦЕЛЕВОЙ таблицы (куда всё собирается)
-          IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: "1xU-JluwmBI66mnUaQlhXy4Csz41Fezgt-Dyw_7OocTA"
+          IMPORT_TEMPLATE_PROM_SPREADSHEET_ID: "1LiVnXt5S0FwSnew1Lq0tfzmRhPhMspMAxXKbKLxOInc"
           IMPORT_PROM_UA_SPREADSHEET_ID: "1WKlCqKReIp7ZByP6O8ctmjJ3Nm7eFsrcVv77y-9XKd4"
           IMPORT_PROM_UA_HEAVY_SPREADSHEET_ID: "1Rkbne3OmHOC3vZtvnuvW_eINL1dBIKdNI7sYkMxATmM"
           

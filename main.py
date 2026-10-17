@@ -26,20 +26,19 @@ SUBSCRIBERS_SERVICES_URL = os.environ.get(
 
 TARGET_COLUMN = "Import_Subscribers"  # Название столбца для поиска email
 # Словарь: скрипт → пауза в секундах ПОСЛЕ его выполнения (перед следующим скриптом).
-# Большая пауза перед import_script_0.py достигается через паузу после yml_parser_AGER.py (последний парсер).
+# Парсеры временно отключены для экономии времени; импорты на Prom отключены до утверждения таблиц.
 SCRIPTS_TO_RUN = {
-    "yml_parser_FOOTBALLERS.py": 60,
-    #"yml_parser_SPECULANT.py": 60,
-    "yml_parser_KIRS.py": 60,
-    "yml_parser_MOYDROP.py": 60,
-    "yml_parser_IZIDROP.py": 60,
-    "yml_parser_BAGSROOM.py": 60,
-    "yml_parser_AGER.py": 70,
-    "import_script_0.py": 90,
-    "IMPORT_PROM_UA.py": 60,
+    # "yml_parser_FOOTBALLERS.py": 60,
+    # "yml_parser_KIRS.py": 60,
+    # "yml_parser_MOYDROP.py": 60,
+    # "yml_parser_IZIDROP.py": 60,
+    # "yml_parser_BAGSROOM.py": 60,
+    # "yml_parser_AGER.py": 70,
+    "import_script_0.py": 60,
+    "IMPORT_PROM_UA.py": 30,
     "Product_Correction.py": 10,
     "SYNC_HEAVY_PROM_UA.py": 10,
-    "API_imports_on_prom.ua.py": 10,
+    # "API_imports_on_prom.ua.py": 10,
 }
 LOG_FILE_TO_CHECK = "feed_processor.log"  # Лог-файл для проверки
 MAX_LOG_LINES = 200  # Максимальное количество строк в логе
